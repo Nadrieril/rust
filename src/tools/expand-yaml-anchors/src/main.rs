@@ -95,6 +95,7 @@ impl App {
             document = yaml_merge_keys::merge_keys(document)
                 .with_context(|| format!("failed to expand {}", self.path(source)))?;
             document = filter_document(document);
+            document = sort_document(document);
 
             YamlEmitter::new(&mut buf).dump(&document).map_err(|err| WithContext {
                 context: "failed to serialize the expanded yaml".into(),
@@ -141,6 +142,24 @@ fn filter_document(document: Yaml) -> Yaml {
         Yaml::Array(vec) => {
             Yaml::Array(vec.into_iter().map(|item| filter_document(item)).collect())
         }
+        other => other,
+    }
+}
+
+/// Sort keys in hashes
+fn sort_document(document: Yaml) -> Yaml {
+    match document {
+        Yaml::Hash(map) => {
+            let mut entries: Vec<(Yaml, Yaml)> = map
+                .into_iter()
+                .map(|(key, value)| (sort_document(key), sort_document(value)))
+                .collect();
+            // Had lifetime issues with sort_by_key
+            entries.sort_unstable_by(|(k1, _), (k2, _)| k1.cmp(k2));
+
+            Yaml::Hash(entries.into_iter().collect())
+        }
+        Yaml::Array(vec) => Yaml::Array(vec.into_iter().map(|item| sort_document(item)).collect()),
         other => other,
     }
 }
