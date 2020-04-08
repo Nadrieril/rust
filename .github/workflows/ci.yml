@@ -244,7 +244,7 @@ jobs:
             name: x86_64-gnu-full-bootstrap
             os: ubuntu-latest-xl
           - env:
-              RUST_BACKTRACE: 1
+              RUST_BACKTRACE: '1'
             name: x86_64-gnu-llvm-7
             os: ubuntu-latest-xl
           - env: {}
@@ -255,20 +255,20 @@ jobs:
             name: x86_64-gnu-tools
             os: ubuntu-latest-xl
           - env:
-              DIST_REQUIRE_ALL_TOOLS: 1
+              DIST_REQUIRE_ALL_TOOLS: '1'
               MACOSX_DEPLOYMENT_TARGET: '10.7'
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
-              RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
+              NO_DEBUG_ASSERTIONS: '1'
+              NO_LLVM_ASSERTIONS: '1'
+              RUSTC_RETRY_LINKER_ON_SEGFAULT: '1'
               RUST_CONFIGURE_ARGS: "--target=aarch64-apple-ios,x86_64-apple-ios --enable-full-tools --enable-sanitizers --enable-profiler --set rust.jemalloc"
               SCRIPT: "./x.py dist"
             name: dist-x86_64-apple
             os: macos-latest
           - env:
               MACOSX_DEPLOYMENT_TARGET: '10.7'
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
-              RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
+              NO_DEBUG_ASSERTIONS: '1'
+              NO_LLVM_ASSERTIONS: '1'
+              RUSTC_RETRY_LINKER_ON_SEGFAULT: '1'
               RUST_CONFIGURE_ARGS: "--enable-extended --enable-profiler --set rust.jemalloc"
               SCRIPT: "./x.py dist"
             name: dist-x86_64-apple-alt
@@ -276,16 +276,16 @@ jobs:
           - env:
               MACOSX_DEPLOYMENT_TARGET: '10.8'
               MACOSX_STD_DEPLOYMENT_TARGET: '10.7'
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
-              RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
+              NO_DEBUG_ASSERTIONS: '1'
+              NO_LLVM_ASSERTIONS: '1'
+              RUSTC_RETRY_LINKER_ON_SEGFAULT: '1'
               RUST_CONFIGURE_ARGS: "--build=x86_64-apple-darwin --enable-sanitizers --enable-profiler --set rust.jemalloc"
               SCRIPT: "./x.py test"
             name: x86_64-apple
             os: macos-latest
           - env:
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
+              NO_DEBUG_ASSERTIONS: '1'
+              NO_LLVM_ASSERTIONS: '1'
               RUST_CONFIGURE_ARGS: "--build=x86_64-pc-windows-msvc --enable-profiler"
               SCRIPT: make ci-subset-1
             name: x86_64-msvc-1
@@ -296,15 +296,15 @@ jobs:
             name: x86_64-msvc-2
             os: windows-latest-xl
           - env:
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
+              NO_DEBUG_ASSERTIONS: '1'
+              NO_LLVM_ASSERTIONS: '1'
               RUST_CONFIGURE_ARGS: "--build=i686-pc-windows-msvc"
               SCRIPT: make ci-subset-1
             name: i686-msvc-1
             os: windows-latest-xl
           - env:
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
+              NO_DEBUG_ASSERTIONS: '1'
+              NO_LLVM_ASSERTIONS: '1'
               RUST_CONFIGURE_ARGS: "--build=i686-pc-windows-msvc"
               SCRIPT: make ci-subset-2
             name: i686-msvc-2
@@ -315,8 +315,8 @@ jobs:
             name: x86_64-msvc-aux
             os: windows-latest-xl
           - env:
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
+              NO_DEBUG_ASSERTIONS: '1'
+              NO_LLVM_ASSERTIONS: '1'
               RUST_CONFIGURE_ARGS: "--build=x86_64-pc-windows-msvc"
               SCRIPT: python x.py test src/tools/cargotest src/tools/cargo
               VCVARS_BAT: vcvars64.bat
@@ -328,55 +328,55 @@ jobs:
             name: x86_64-msvc-tools
             os: windows-latest-xl
           - env:
-              CUSTOM_MINGW: 1
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
+              CUSTOM_MINGW: '1'
+              NO_DEBUG_ASSERTIONS: '1'
+              NO_LLVM_ASSERTIONS: '1'
               RUST_CONFIGURE_ARGS: "--build=i686-pc-windows-gnu"
               SCRIPT: make ci-mingw-subset-1
             name: i686-mingw-1
             os: windows-latest-xl
           - env:
-              CUSTOM_MINGW: 1
+              CUSTOM_MINGW: '1'
               RUST_CONFIGURE_ARGS: "--build=i686-pc-windows-gnu"
               SCRIPT: make ci-mingw-subset-2
             name: i686-mingw-2
             os: windows-latest-xl
           - env:
-              CUSTOM_MINGW: 1
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
+              CUSTOM_MINGW: '1'
+              NO_DEBUG_ASSERTIONS: '1'
+              NO_LLVM_ASSERTIONS: '1'
               RUST_CONFIGURE_ARGS: "--build=x86_64-pc-windows-gnu"
               SCRIPT: make ci-mingw-subset-1
             name: x86_64-mingw-1
             os: windows-latest-xl
           - env:
-              CUSTOM_MINGW: 1
+              CUSTOM_MINGW: '1'
               RUST_CONFIGURE_ARGS: "--build=x86_64-pc-windows-gnu"
               SCRIPT: make ci-mingw-subset-2
             name: x86_64-mingw-2
             os: windows-latest-xl
           - env:
-              DIST_REQUIRE_ALL_TOOLS: 1
+              DIST_REQUIRE_ALL_TOOLS: '1'
               RUST_CONFIGURE_ARGS: "--build=x86_64-pc-windows-msvc --target=x86_64-pc-windows-msvc,aarch64-pc-windows-msvc --enable-full-tools --enable-profiler"
               SCRIPT: python x.py dist
             name: dist-x86_64-msvc
             os: windows-latest-xl
           - env:
-              DIST_REQUIRE_ALL_TOOLS: 1
+              DIST_REQUIRE_ALL_TOOLS: '1'
               RUST_CONFIGURE_ARGS: "--build=i686-pc-windows-msvc --target=i586-pc-windows-msvc --enable-full-tools --enable-profiler"
               SCRIPT: python x.py dist
             name: dist-i686-msvc
             os: windows-latest-xl
           - env:
-              CUSTOM_MINGW: 1
-              DIST_REQUIRE_ALL_TOOLS: 1
+              CUSTOM_MINGW: '1'
+              DIST_REQUIRE_ALL_TOOLS: '1'
               RUST_CONFIGURE_ARGS: "--build=i686-pc-windows-gnu --enable-full-tools --enable-profiler"
               SCRIPT: python x.py dist
             name: dist-i686-mingw
             os: windows-latest-xl
           - env:
-              CUSTOM_MINGW: 1
-              DIST_REQUIRE_ALL_TOOLS: 1
+              CUSTOM_MINGW: '1'
+              DIST_REQUIRE_ALL_TOOLS: '1'
               RUST_CONFIGURE_ARGS: "--build=x86_64-pc-windows-gnu --enable-full-tools --enable-profiler"
               SCRIPT: python x.py dist
             name: dist-x86_64-mingw
@@ -610,7 +610,7 @@ jobs:
             name: x86_64-gnu-llvm-7
             os: ubuntu-latest-xl
           - env:
-              CI_ONLY_WHEN_SUBMODULES_CHANGED: 1
+              CI_ONLY_WHEN_SUBMODULES_CHANGED: '1'
             name: x86_64-gnu-tools
             os: ubuntu-latest-xl
         name:

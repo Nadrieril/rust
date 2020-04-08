@@ -21,8 +21,8 @@ let json = Prelude.JSON.(JSONF JSON)
 let toplevel_json = json
 
 let MatrixEntry =
-      { Type = { name : Text, env : Map Text JSON, os : Text }
-      , default.env = [] : Map Text JSON
+      { Type = { name : Text, env : Map Text Text, os : Text }
+      , default.env = Prelude.Map.empty Text Text
       }
 
 let make_name =
@@ -44,7 +44,15 @@ let make_include =
               (   λ(entry : MatrixEntry.Type)
                 → json.object
                     ( toMap
-                        { env = json.object entry.env
+                        { env =
+                            json.object
+                              ( Prelude.Map.map
+                                  Text
+                                  Text
+                                  JSON
+                                  json.string
+                                  entry.env
+                              )
                         , name = json.string entry.name
                         , os = json.string entry.os
                         }
@@ -84,7 +92,7 @@ let pr_strategy =
       , basic_linux_xl "x86_64-gnu-llvm-7"
       ,   LinuxXL
         ⫽ { name = "x86_64-gnu-tools"
-          , env = toMap { CI_ONLY_WHEN_SUBMODULES_CHANGED = json.integer +1 }
+          , env = toMap { CI_ONLY_WHEN_SUBMODULES_CHANGED = "1" }
           }
       ]
 
@@ -92,7 +100,7 @@ let try_strategy =
       [ basic_linux_xl "dist-x86_64-linux"
       ,   LinuxXL
         ⫽ { name = "dist-x86_64-linux-alt"
-          , env = toMap { IMAGE = json.string "dist-x86_64-linux" }
+          , env = toMap { IMAGE = "dist-x86_64-linux" }
           }
       ]
 
@@ -122,7 +130,7 @@ let auto_strategy =
             , basic_linux_xl "dist-x86_64-linux"
             ,   LinuxXL
               ⫽ { name = "dist-x86_64-linux-alt"
-                , env = toMap { IMAGE = json.string "dist-x86_64-linux" }
+                , env = toMap { IMAGE = "dist-x86_64-linux" }
                 }
             , basic_linux_xl "dist-x86_64-musl"
             , basic_linux_xl "dist-x86_64-netbsd"
@@ -138,15 +146,13 @@ let auto_strategy =
             , basic_linux_xl "x86_64-gnu-full-bootstrap"
             ,   LinuxXL
               ⫽ { name = "x86_64-gnu-llvm-7"
-                , env = toMap { RUST_BACKTRACE = json.integer +1 }
+                , env = toMap { RUST_BACKTRACE = "1" }
                 }
             , basic_linux_xl "x86_64-gnu-nopt"
             ,   LinuxXL
               ⫽ { name = "x86_64-gnu-tools"
                 , env = toMap
-                    { DEPLOY_TOOLSTATES_JSON =
-                        json.string "toolstates-linux.json"
-                    }
+                    { DEPLOY_TOOLSTATES_JSON = "toolstates-linux.json" }
                 }
             ]
 
@@ -154,42 +160,39 @@ let auto_strategy =
             [   MacOS_XL
               ⫽ { name = "dist-x86_64-apple"
                 , env = toMap
-                    { SCRIPT = json.string "./x.py dist"
+                    { SCRIPT = "./x.py dist"
                     , RUST_CONFIGURE_ARGS =
-                        json.string
-                          "--target=aarch64-apple-ios,x86_64-apple-ios --enable-full-tools --enable-sanitizers --enable-profiler --set rust.jemalloc"
-                    , RUSTC_RETRY_LINKER_ON_SEGFAULT = json.integer +1
-                    , MACOSX_DEPLOYMENT_TARGET = json.string "10.7"
-                    , NO_LLVM_ASSERTIONS = json.integer +1
-                    , NO_DEBUG_ASSERTIONS = json.integer +1
-                    , DIST_REQUIRE_ALL_TOOLS = json.integer +1
+                        "--target=aarch64-apple-ios,x86_64-apple-ios --enable-full-tools --enable-sanitizers --enable-profiler --set rust.jemalloc"
+                    , RUSTC_RETRY_LINKER_ON_SEGFAULT = "1"
+                    , MACOSX_DEPLOYMENT_TARGET = "10.7"
+                    , NO_LLVM_ASSERTIONS = "1"
+                    , NO_DEBUG_ASSERTIONS = "1"
+                    , DIST_REQUIRE_ALL_TOOLS = "1"
                     }
                 }
             ,   MacOS_XL
               ⫽ { name = "dist-x86_64-apple-alt"
                 , env = toMap
-                    { SCRIPT = json.string "./x.py dist"
+                    { SCRIPT = "./x.py dist"
                     , RUST_CONFIGURE_ARGS =
-                        json.string
-                          "--enable-extended --enable-profiler --set rust.jemalloc"
-                    , RUSTC_RETRY_LINKER_ON_SEGFAULT = json.integer +1
-                    , MACOSX_DEPLOYMENT_TARGET = json.string "10.7"
-                    , NO_LLVM_ASSERTIONS = json.integer +1
-                    , NO_DEBUG_ASSERTIONS = json.integer +1
+                        "--enable-extended --enable-profiler --set rust.jemalloc"
+                    , RUSTC_RETRY_LINKER_ON_SEGFAULT = "1"
+                    , MACOSX_DEPLOYMENT_TARGET = "10.7"
+                    , NO_LLVM_ASSERTIONS = "1"
+                    , NO_DEBUG_ASSERTIONS = "1"
                     }
                 }
             ,   MacOS_XL
               ⫽ { name = "x86_64-apple"
                 , env = toMap
-                    { SCRIPT = json.string "./x.py test"
+                    { SCRIPT = "./x.py test"
                     , RUST_CONFIGURE_ARGS =
-                        json.string
-                          "--build=x86_64-apple-darwin --enable-sanitizers --enable-profiler --set rust.jemalloc"
-                    , RUSTC_RETRY_LINKER_ON_SEGFAULT = json.integer +1
-                    , MACOSX_DEPLOYMENT_TARGET = json.string "10.8"
-                    , MACOSX_STD_DEPLOYMENT_TARGET = json.string "10.7"
-                    , NO_LLVM_ASSERTIONS = json.integer +1
-                    , NO_DEBUG_ASSERTIONS = json.integer +1
+                        "--build=x86_64-apple-darwin --enable-sanitizers --enable-profiler --set rust.jemalloc"
+                    , RUSTC_RETRY_LINKER_ON_SEGFAULT = "1"
+                    , MACOSX_DEPLOYMENT_TARGET = "10.8"
+                    , MACOSX_STD_DEPLOYMENT_TARGET = "10.7"
+                    , NO_LLVM_ASSERTIONS = "1"
+                    , NO_DEBUG_ASSERTIONS = "1"
                     }
                 }
             ]
@@ -197,9 +200,8 @@ let auto_strategy =
       let -- FIXME(#59637)
           no_assertions =
             toMap
-              { NO_DEBUG_ASSERTIONS =
-                  let comment = "FIXME(#59637)" in json.integer +1
-              , NO_LLVM_ASSERTIONS = json.integer +1
+              { NO_DEBUG_ASSERTIONS = let comment = "FIXME(#59637)" in "1"
+              , NO_LLVM_ASSERTIONS = "1"
               }
 
       let windows =
@@ -208,19 +210,17 @@ let auto_strategy =
                 , env =
                       no_assertions
                     # toMap
-                        { SCRIPT = json.string "make ci-subset-1"
+                        { SCRIPT = "make ci-subset-1"
                         , RUST_CONFIGURE_ARGS =
-                            json.string
-                              "--build=x86_64-pc-windows-msvc --enable-profiler"
+                            "--build=x86_64-pc-windows-msvc --enable-profiler"
                         }
                 }
             ,   Windows_XL
               ⫽ { name = "x86_64-msvc-2"
                 , env = toMap
-                    { SCRIPT = json.string "make ci-subset-2"
+                    { SCRIPT = "make ci-subset-2"
                     , RUST_CONFIGURE_ARGS =
-                        json.string
-                          "--build=x86_64-pc-windows-msvc --enable-profiler"
+                        "--build=x86_64-pc-windows-msvc --enable-profiler"
                     }
                 }
             ,   Windows_XL
@@ -228,9 +228,8 @@ let auto_strategy =
                 , env =
                       no_assertions
                     # toMap
-                        { SCRIPT = json.string "make ci-subset-1"
-                        , RUST_CONFIGURE_ARGS =
-                            json.string "--build=i686-pc-windows-msvc"
+                        { SCRIPT = "make ci-subset-1"
+                        , RUST_CONFIGURE_ARGS = "--build=i686-pc-windows-msvc"
                         }
                 }
             ,   Windows_XL
@@ -238,18 +237,15 @@ let auto_strategy =
                 , env =
                       no_assertions
                     # toMap
-                        { SCRIPT = json.string "make ci-subset-2"
-                        , RUST_CONFIGURE_ARGS =
-                            json.string "--build=i686-pc-windows-msvc"
+                        { SCRIPT = "make ci-subset-2"
+                        , RUST_CONFIGURE_ARGS = "--build=i686-pc-windows-msvc"
                         }
                 }
             ,   Windows_XL
               ⫽ { name = "x86_64-msvc-aux"
                 , env = toMap
-                    { RUST_CHECK_TARGET =
-                        json.string "check-aux EXCLUDE_CARGO=1"
-                    , RUST_CONFIGURE_ARGS =
-                        json.string "--build=x86_64-pc-windows-msvc"
+                    { RUST_CHECK_TARGET = "check-aux EXCLUDE_CARGO=1"
+                    , RUST_CONFIGURE_ARGS = "--build=x86_64-pc-windows-msvc"
                     }
                 }
             ,   Windows_XL
@@ -258,22 +254,18 @@ let auto_strategy =
                       no_assertions
                     # toMap
                         { SCRIPT =
-                            json.string
-                              "python x.py test src/tools/cargotest src/tools/cargo"
-                        , RUST_CONFIGURE_ARGS =
-                            json.string "--build=x86_64-pc-windows-msvc"
-                        , VCVARS_BAT = json.string "vcvars64.bat"
+                            "python x.py test src/tools/cargotest src/tools/cargo"
+                        , RUST_CONFIGURE_ARGS = "--build=x86_64-pc-windows-msvc"
+                        , VCVARS_BAT = "vcvars64.bat"
                         }
                 }
             ,   Windows_XL
               ⫽ { name = "x86_64-msvc-tools"
                 , env = toMap
                     { SCRIPT =
-                        json.string
-                          "src/ci/docker/x86_64-gnu-tools/checktools.sh x.py /tmp/toolstate/toolstates.json windows"
+                        "src/ci/docker/x86_64-gnu-tools/checktools.sh x.py /tmp/toolstate/toolstates.json windows"
                     , RUST_CONFIGURE_ARGS =
-                        json.string
-                          "--build=x86_64-pc-windows-msvc --save-toolstates=/tmp/toolstate/toolstates.json"
+                        "--build=x86_64-pc-windows-msvc --save-toolstates=/tmp/toolstate/toolstates.json"
                     }
                 }
             ]
@@ -298,19 +290,17 @@ let auto_strategy =
                 , env =
                       no_assertions
                     # toMap
-                        { CUSTOM_MINGW = json.integer +1
-                        , RUST_CONFIGURE_ARGS =
-                            json.string "--build=i686-pc-windows-gnu"
-                        , SCRIPT = json.string "make ci-mingw-subset-1"
+                        { CUSTOM_MINGW = "1"
+                        , RUST_CONFIGURE_ARGS = "--build=i686-pc-windows-gnu"
+                        , SCRIPT = "make ci-mingw-subset-1"
                         }
                 }
             ,   Windows_XL
               ⫽ { name = "i686-mingw-2"
                 , env = toMap
-                    { CUSTOM_MINGW = json.integer +1
-                    , RUST_CONFIGURE_ARGS =
-                        json.string "--build=i686-pc-windows-gnu"
-                    , SCRIPT = json.string "make ci-mingw-subset-2"
+                    { CUSTOM_MINGW = "1"
+                    , RUST_CONFIGURE_ARGS = "--build=i686-pc-windows-gnu"
+                    , SCRIPT = "make ci-mingw-subset-2"
                     }
                 }
             ,   Windows_XL
@@ -318,70 +308,63 @@ let auto_strategy =
                 , env =
                       no_assertions
                     # toMap
-                        { CUSTOM_MINGW = json.integer +1
-                        , RUST_CONFIGURE_ARGS =
-                            json.string "--build=x86_64-pc-windows-gnu"
-                        , SCRIPT = json.string "make ci-mingw-subset-1"
+                        { CUSTOM_MINGW = "1"
+                        , RUST_CONFIGURE_ARGS = "--build=x86_64-pc-windows-gnu"
+                        , SCRIPT = "make ci-mingw-subset-1"
                         }
                 }
             ,   Windows_XL
               ⫽ { name = "x86_64-mingw-2"
                 , env = toMap
-                    { CUSTOM_MINGW = json.integer +1
-                    , RUST_CONFIGURE_ARGS =
-                        json.string "--build=x86_64-pc-windows-gnu"
-                    , SCRIPT = json.string "make ci-mingw-subset-2"
+                    { CUSTOM_MINGW = "1"
+                    , RUST_CONFIGURE_ARGS = "--build=x86_64-pc-windows-gnu"
+                    , SCRIPT = "make ci-mingw-subset-2"
                     }
                 }
             ,   Windows_XL
               ⫽ { name = "dist-x86_64-msvc"
                 , env = toMap
-                    { DIST_REQUIRE_ALL_TOOLS = json.integer +1
+                    { DIST_REQUIRE_ALL_TOOLS = "1"
                     , RUST_CONFIGURE_ARGS =
-                        json.string
-                          "--build=x86_64-pc-windows-msvc --target=x86_64-pc-windows-msvc,aarch64-pc-windows-msvc --enable-full-tools --enable-profiler"
-                    , SCRIPT = json.string "python x.py dist"
+                        "--build=x86_64-pc-windows-msvc --target=x86_64-pc-windows-msvc,aarch64-pc-windows-msvc --enable-full-tools --enable-profiler"
+                    , SCRIPT = "python x.py dist"
                     }
                 }
             ,   Windows_XL
               ⫽ { name = "dist-i686-msvc"
                 , env = toMap
-                    { DIST_REQUIRE_ALL_TOOLS = json.integer +1
+                    { DIST_REQUIRE_ALL_TOOLS = "1"
                     , RUST_CONFIGURE_ARGS =
-                        json.string
-                          "--build=i686-pc-windows-msvc --target=i586-pc-windows-msvc --enable-full-tools --enable-profiler"
-                    , SCRIPT = json.string "python x.py dist"
+                        "--build=i686-pc-windows-msvc --target=i586-pc-windows-msvc --enable-full-tools --enable-profiler"
+                    , SCRIPT = "python x.py dist"
                     }
                 }
             ,   Windows_XL
               ⫽ { name = "dist-i686-mingw"
                 , env = toMap
-                    { CUSTOM_MINGW = json.integer +1
-                    , DIST_REQUIRE_ALL_TOOLS = json.integer +1
+                    { CUSTOM_MINGW = "1"
+                    , DIST_REQUIRE_ALL_TOOLS = "1"
                     , RUST_CONFIGURE_ARGS =
-                        json.string
-                          "--build=i686-pc-windows-gnu --enable-full-tools --enable-profiler"
-                    , SCRIPT = json.string "python x.py dist"
+                        "--build=i686-pc-windows-gnu --enable-full-tools --enable-profiler"
+                    , SCRIPT = "python x.py dist"
                     }
                 }
             ,   Windows_XL
               ⫽ { name = "dist-x86_64-mingw"
                 , env = toMap
-                    { CUSTOM_MINGW = json.integer +1
-                    , DIST_REQUIRE_ALL_TOOLS = json.integer +1
+                    { CUSTOM_MINGW = "1"
+                    , DIST_REQUIRE_ALL_TOOLS = "1"
                     , RUST_CONFIGURE_ARGS =
-                        json.string
-                          "--build=x86_64-pc-windows-gnu --enable-full-tools --enable-profiler"
-                    , SCRIPT = json.string "python x.py dist"
+                        "--build=x86_64-pc-windows-gnu --enable-full-tools --enable-profiler"
+                    , SCRIPT = "python x.py dist"
                     }
                 }
             ,   Windows_XL
               ⫽ { name = "dist-x86_64-msvc-alt"
                 , env = toMap
                     { RUST_CONFIGURE_ARGS =
-                        json.string
-                          "--build=x86_64-pc-windows-msvc --enable-extended --enable-profiler"
-                    , SCRIPT = json.string "python x.py dist"
+                        "--build=x86_64-pc-windows-msvc --enable-extended --enable-profiler"
+                    , SCRIPT = "python x.py dist"
                     }
                 }
             ]
