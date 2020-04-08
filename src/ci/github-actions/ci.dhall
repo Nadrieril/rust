@@ -75,6 +75,32 @@ let make_strategy =
               }
           )
 
+let shared_ci_variables = toMap { CI_JOB_NAME = "\${{ matrix.name }}" }
+
+let public_variables =
+      toMap
+        { SCCACHE_BUCKET = "rust-lang-gha-caches"
+        , TOOLSTATE_REPO = "https://github.com/pietroalbini/rust-toolstate"
+        }
+
+let
+    -- AWS_SECRET_ACCESS_KEYs are stored in GitHub's secrets storage, named
+    -- AWS_SECRET_ACCESS_KEY_<keyid>. Including the key id in the name allows to
+    -- rotate them in a single branch while keeping the old key in another
+    -- branch, which wouldn't be possible if the key was named with the kind
+    -- (caches, artifacts...).
+    prod_variables =
+      toMap
+        { SCCACHE_BUCKET = "rust-lang-gha-caches"
+        , DEPLOY_BUCKET = "rust-lang-gha"
+        , TOOLSTATE_REPO = "https://github.com/pietroalbini/rust-toolstate"
+        , TOOLSTATE_ISSUES_API_URL =
+            "https://api.github.com/repos/pietroalbini/rust-toolstate/issues"
+        , TOOLSTATE_PUBLISH = "1"
+        , CACHES_AWS_ACCESS_KEY_ID = "AKIA46X5W6CZOMUQATD5"
+        , ARTIFACTS_AWS_ACCESS_KEY_ID = "AKIA46X5W6CZH5AYXDVF"
+        }
+
 let BaseJob = MatrixEntry.default
 
 let LinuxXL = BaseJob ⫽ { os = "ubuntu-latest-xl" }
@@ -84,6 +110,182 @@ let -- We don't have an XL builder for this
       BaseJob ⫽ { os = "macos-latest" }
 
 let Windows_XL = BaseJob ⫽ { os = "windows-latest-xl" }
+
+let Step =
+      { Type =
+          { name : Text
+          , run : Optional Text
+          , env : Optional (Map Text Text)
+          , with : Optional (Map Text Text)
+          , if : Optional Text
+          , uses : Optional Text
+          , shell : Optional Text
+          }
+      , default =
+        { env = None (Map Text Text)
+        , if = None Text
+        , run = None Text
+        , shell = None Text
+        , uses = None Text
+        , with = None (Map Text Text)
+        }
+      }
+
+let StepBase =
+      { Type = Step.Type
+      , default = Step.default ⫽ { if = Some "success() && !env.SKIP_JOB" }
+      }
+
+let
+    -- While on Linux and macOS builders it just forwards the arguments to the
+    -- system bash, this wrapper allows switching from the host's bash.exe to
+    -- the one we install along with MSYS2 mid-build on Windows.
+    --
+    -- Once the step to install MSYS2 is executed, the CI_OVERRIDE_SHELL
+    -- environment variable is set pointing to our MSYS2's bash.exe. From that
+    -- moment the host's bash.exe will not be called anymore.
+    --
+    -- This is needed because we can't launch our own bash.exe from the host
+    -- bash.exe, as that would load two different cygwin1.dll in memory, causing
+    -- "cygwin heap mismatch" errors.
+    StepRun =
+      { Type = StepBase.Type
+      , default =
+            StepBase.default
+          ⫽ { shell = Some "python src/ci/exec-with-shell.py {0}" }
+      }
+
+let BaseCIJob =
+      { timeout-minutes = 600
+      , runs-on = "\${{ matrix.os }}"
+      , env = shared_ci_variables
+      , steps =
+        [ Step::{
+          , name = "disable git crlf conversion"
+          , run = Some "git config --global core.autocrlf false"
+          , shell = Some "bash"
+          }
+        , Step::{
+          , name = "checkout the source code"
+          , uses = Some "actions/checkout@v1"
+          , with = Some (toMap { fetch-depth = "2" })
+          }
+        , StepBase::{
+          , name = "configure GitHub Actions to kill the build when outdated"
+          , if = Some
+              "success() && !env.SKIP_JOB && github.ref != 'refs/heads/try'"
+          , uses = Some
+              "rust-lang/simpleinfra/github-actions/cancel-outdated-builds@master"
+          , with = Some
+              (toMap { github_token = "\${{ secrets.github_token }}" })
+          }
+        , StepRun::{
+          , name = "add extra environment variables"
+          , env = Some
+              (toMap { EXTRA_VARIABLES = "\${{ toJson(matrix.env) }}" })
+          , run = Some "src/ci/scripts/setup-environment.sh"
+          }
+        , StepRun::{
+          , name = "decide whether to skip this job"
+          , run = Some "src/ci/scripts/should-skip-this.sh"
+          }
+        , StepRun::{
+          , name = "collect CPU statistics"
+          , run = Some "src/ci/scripts/collect-cpu-stats.sh"
+          }
+        , StepRun::{
+          , name = "show the current environment"
+          , run = Some "src/ci/scripts/dump-environment.sh"
+          }
+        , StepRun::{
+          , name = "install awscli"
+          , run = Some "src/ci/scripts/install-awscli.sh"
+          }
+        , StepRun::{
+          , name = "install sccache"
+          , run = Some "src/ci/scripts/install-sccache.sh"
+          }
+        , StepRun::{
+          , name = "install clang"
+          , run = Some "src/ci/scripts/install-clang.sh"
+          }
+        , StepRun::{
+          , name = "install WIX"
+          , run = Some "src/ci/scripts/install-wix.sh"
+          }
+        , StepRun::{
+          , name = "install InnoSetup"
+          , run = Some "src/ci/scripts/install-innosetup.sh"
+          }
+        , StepRun::{
+          , name = "ensure the build happens on a partition with enough space"
+          , run = Some "src/ci/scripts/symlink-build-dir.sh"
+          }
+        , StepRun::{
+          , name = "disable git crlf conversion"
+          , run = Some "src/ci/scripts/disable-git-crlf-conversion.sh"
+          }
+        , StepRun::{
+          , name = "install MSYS2"
+          , run = Some "src/ci/scripts/install-msys2.sh"
+          }
+        , StepRun::{
+          , name = "install MSYS2 packages"
+          , run = Some "src/ci/scripts/install-msys2-packages.sh"
+          }
+        , StepRun::{
+          , name = "install MinGW"
+          , run = Some "src/ci/scripts/install-mingw.sh"
+          }
+        , StepRun::{
+          , name = "install ninja"
+          , run = Some "src/ci/scripts/install-ninja.sh"
+          }
+        , StepRun::{
+          , name = "enable ipv6 on Docker"
+          , run = Some "src/ci/scripts/enable-docker-ipv6.sh"
+          }
+        , StepRun::{
+          , name = "disable git crlf conversion"
+          , run = Some "src/ci/scripts/disable-git-crlf-conversion.sh"
+          }
+        , StepRun::{
+          , name = "checkout submodules"
+          , run = Some "src/ci/scripts/checkout-submodules.sh"
+          }
+        , StepRun::{
+          , name = "ensure line endings are correct"
+          , run = Some "src/ci/scripts/verify-line-endings.sh"
+          }
+        , StepRun::{
+          , name = "run the build"
+          , env = Some
+              ( toMap
+                  { TOOLSTATE_REPO_ACCESS_TOKEN =
+                      "\${{ secrets.TOOLSTATE_REPO_ACCESS_TOKEN }}"
+                  , AWS_ACCESS_KEY_ID = "\${{ env.CACHES_AWS_ACCESS_KEY_ID }}"
+                  , AWS_SECRET_ACCESS_KEY =
+                      "\${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', env.CACHES_AWS_ACCESS_KEY_ID)] }}"
+                  }
+              )
+          , run = Some "src/ci/scripts/run-build-from-ci.sh"
+          }
+        , StepRun::{
+          , name = "upload artifacts to S3"
+          , env = Some
+              ( toMap
+                  { AWS_ACCESS_KEY_ID =
+                      "\${{ env.ARTIFACTS_AWS_ACCESS_KEY_ID }}"
+                  , AWS_SECRET_ACCESS_KEY =
+                      "\${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', env.ARTIFACTS_AWS_ACCESS_KEY_ID)] }}"
+                  }
+              )
+          , if = Some
+              "success() && !env.SKIP_JOB && (github.event_name == 'push' || env.DEPLOY == '1' || env.DEPLOY_ALT == '1')"
+          , run = Some "src/ci/scripts/upload-artifacts.sh"
+          }
+        ]
+      }
 
 let basic_linux_xl = λ(name : Text) → LinuxXL ⫽ { name }
 
@@ -397,277 +599,7 @@ let jobs =
               "github.event_name == 'push' && github.ref == 'refs/heads/auto' && github.repository == 'rust-lang-ci/rust'"
         , name = json.string "auto"
         , runs-on = json.string "\${{ matrix.os }}"
-        , steps =
-            json.array
-              [ json.object
-                  ( toMap
-                      { name = json.string "disable git crlf conversion"
-                      , run =
-                          json.string "git config --global core.autocrlf false"
-                      , shell = json.string "bash"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { name = json.string "checkout the source code"
-                      , uses = json.string "actions/checkout@v1"
-                      , with =
-                          json.object (toMap { fetch-depth = json.integer +2 })
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if =
-                          json.string
-                            "success() && !env.SKIP_JOB && github.ref != 'refs/heads/try'"
-                      , name =
-                          json.string
-                            "configure GitHub Actions to kill the build when outdated"
-                      , uses =
-                          json.string
-                            "rust-lang/simpleinfra/github-actions/cancel-outdated-builds@master"
-                      , with =
-                          json.object
-                            ( toMap
-                                { github_token =
-                                    json.string "\${{ secrets.github_token }}"
-                                }
-                            )
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { env =
-                          json.object
-                            ( toMap
-                                { EXTRA_VARIABLES =
-                                    json.string "\${{ toJson(matrix.env) }}"
-                                }
-                            )
-                      , if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "add extra environment variables"
-                      , run = json.string "src/ci/scripts/setup-environment.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "decide whether to skip this job"
-                      , run = json.string "src/ci/scripts/should-skip-this.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "collect CPU statistics"
-                      , run = json.string "src/ci/scripts/collect-cpu-stats.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "show the current environment"
-                      , run = json.string "src/ci/scripts/dump-environment.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install awscli"
-                      , run = json.string "src/ci/scripts/install-awscli.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install sccache"
-                      , run = json.string "src/ci/scripts/install-sccache.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install clang"
-                      , run = json.string "src/ci/scripts/install-clang.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install WIX"
-                      , run = json.string "src/ci/scripts/install-wix.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install InnoSetup"
-                      , run = json.string "src/ci/scripts/install-innosetup.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name =
-                          json.string
-                            "ensure the build happens on a partition with enough space"
-                      , run = json.string "src/ci/scripts/symlink-build-dir.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "disable git crlf conversion"
-                      , run =
-                          json.string
-                            "src/ci/scripts/disable-git-crlf-conversion.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install MSYS2"
-                      , run = json.string "src/ci/scripts/install-msys2.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install MSYS2 packages"
-                      , run =
-                          json.string "src/ci/scripts/install-msys2-packages.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install MinGW"
-                      , run = json.string "src/ci/scripts/install-mingw.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install ninja"
-                      , run = json.string "src/ci/scripts/install-ninja.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "enable ipv6 on Docker"
-                      , run = json.string "src/ci/scripts/enable-docker-ipv6.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "disable git crlf conversion"
-                      , run =
-                          json.string
-                            "src/ci/scripts/disable-git-crlf-conversion.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "checkout submodules"
-                      , run =
-                          json.string "src/ci/scripts/checkout-submodules.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "ensure line endings are correct"
-                      , run =
-                          json.string "src/ci/scripts/verify-line-endings.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { env =
-                          json.object
-                            ( toMap
-                                { AWS_ACCESS_KEY_ID =
-                                    json.string
-                                      "\${{ env.CACHES_AWS_ACCESS_KEY_ID }}"
-                                , AWS_SECRET_ACCESS_KEY =
-                                    json.string
-                                      "\${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', env.CACHES_AWS_ACCESS_KEY_ID)] }}"
-                                , TOOLSTATE_REPO_ACCESS_TOKEN =
-                                    json.string
-                                      "\${{ secrets.TOOLSTATE_REPO_ACCESS_TOKEN }}"
-                                }
-                            )
-                      , if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "run the build"
-                      , run = json.string "src/ci/scripts/run-build-from-ci.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { env =
-                          json.object
-                            ( toMap
-                                { AWS_ACCESS_KEY_ID =
-                                    json.string
-                                      "\${{ env.ARTIFACTS_AWS_ACCESS_KEY_ID }}"
-                                , AWS_SECRET_ACCESS_KEY =
-                                    json.string
-                                      "\${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', env.ARTIFACTS_AWS_ACCESS_KEY_ID)] }}"
-                                }
-                            )
-                      , if =
-                          json.string
-                            "success() && !env.SKIP_JOB && (github.event_name == 'push' || env.DEPLOY == '1' || env.DEPLOY_ALT == '1')"
-                      , name = json.string "upload artifacts to S3"
-                      , run = json.string "src/ci/scripts/upload-artifacts.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              ]
+        , steps = BaseCIJob.steps
         , strategy = make_strategy auto_strategy
         , timeout-minutes = json.integer +600
         }
@@ -772,277 +704,7 @@ let jobs =
         , if = json.string "github.event_name == 'pull_request'"
         , name = json.string "PR"
         , runs-on = json.string "\${{ matrix.os }}"
-        , steps =
-            json.array
-              [ json.object
-                  ( toMap
-                      { name = json.string "disable git crlf conversion"
-                      , run =
-                          json.string "git config --global core.autocrlf false"
-                      , shell = json.string "bash"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { name = json.string "checkout the source code"
-                      , uses = json.string "actions/checkout@v1"
-                      , with =
-                          json.object (toMap { fetch-depth = json.integer +2 })
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if =
-                          json.string
-                            "success() && !env.SKIP_JOB && github.ref != 'refs/heads/try'"
-                      , name =
-                          json.string
-                            "configure GitHub Actions to kill the build when outdated"
-                      , uses =
-                          json.string
-                            "rust-lang/simpleinfra/github-actions/cancel-outdated-builds@master"
-                      , with =
-                          json.object
-                            ( toMap
-                                { github_token =
-                                    json.string "\${{ secrets.github_token }}"
-                                }
-                            )
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { env =
-                          json.object
-                            ( toMap
-                                { EXTRA_VARIABLES =
-                                    json.string "\${{ toJson(matrix.env) }}"
-                                }
-                            )
-                      , if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "add extra environment variables"
-                      , run = json.string "src/ci/scripts/setup-environment.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "decide whether to skip this job"
-                      , run = json.string "src/ci/scripts/should-skip-this.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "collect CPU statistics"
-                      , run = json.string "src/ci/scripts/collect-cpu-stats.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "show the current environment"
-                      , run = json.string "src/ci/scripts/dump-environment.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install awscli"
-                      , run = json.string "src/ci/scripts/install-awscli.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install sccache"
-                      , run = json.string "src/ci/scripts/install-sccache.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install clang"
-                      , run = json.string "src/ci/scripts/install-clang.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install WIX"
-                      , run = json.string "src/ci/scripts/install-wix.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install InnoSetup"
-                      , run = json.string "src/ci/scripts/install-innosetup.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name =
-                          json.string
-                            "ensure the build happens on a partition with enough space"
-                      , run = json.string "src/ci/scripts/symlink-build-dir.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "disable git crlf conversion"
-                      , run =
-                          json.string
-                            "src/ci/scripts/disable-git-crlf-conversion.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install MSYS2"
-                      , run = json.string "src/ci/scripts/install-msys2.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install MSYS2 packages"
-                      , run =
-                          json.string "src/ci/scripts/install-msys2-packages.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install MinGW"
-                      , run = json.string "src/ci/scripts/install-mingw.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install ninja"
-                      , run = json.string "src/ci/scripts/install-ninja.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "enable ipv6 on Docker"
-                      , run = json.string "src/ci/scripts/enable-docker-ipv6.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "disable git crlf conversion"
-                      , run =
-                          json.string
-                            "src/ci/scripts/disable-git-crlf-conversion.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "checkout submodules"
-                      , run =
-                          json.string "src/ci/scripts/checkout-submodules.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "ensure line endings are correct"
-                      , run =
-                          json.string "src/ci/scripts/verify-line-endings.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { env =
-                          json.object
-                            ( toMap
-                                { AWS_ACCESS_KEY_ID =
-                                    json.string
-                                      "\${{ env.CACHES_AWS_ACCESS_KEY_ID }}"
-                                , AWS_SECRET_ACCESS_KEY =
-                                    json.string
-                                      "\${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', env.CACHES_AWS_ACCESS_KEY_ID)] }}"
-                                , TOOLSTATE_REPO_ACCESS_TOKEN =
-                                    json.string
-                                      "\${{ secrets.TOOLSTATE_REPO_ACCESS_TOKEN }}"
-                                }
-                            )
-                      , if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "run the build"
-                      , run = json.string "src/ci/scripts/run-build-from-ci.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { env =
-                          json.object
-                            ( toMap
-                                { AWS_ACCESS_KEY_ID =
-                                    json.string
-                                      "\${{ env.ARTIFACTS_AWS_ACCESS_KEY_ID }}"
-                                , AWS_SECRET_ACCESS_KEY =
-                                    json.string
-                                      "\${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', env.ARTIFACTS_AWS_ACCESS_KEY_ID)] }}"
-                                }
-                            )
-                      , if =
-                          json.string
-                            "success() && !env.SKIP_JOB && (github.event_name == 'push' || env.DEPLOY == '1' || env.DEPLOY_ALT == '1')"
-                      , name = json.string "upload artifacts to S3"
-                      , run = json.string "src/ci/scripts/upload-artifacts.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              ]
+        , steps = BaseCIJob.steps
         , strategy = make_strategy pr_strategy
         , timeout-minutes = json.integer +600
         }
@@ -1071,277 +733,7 @@ let jobs =
               "github.event_name == 'push' && github.ref == 'refs/heads/try' && github.repository == 'rust-lang-ci/rust'"
         , name = json.string "try"
         , runs-on = json.string "\${{ matrix.os }}"
-        , steps =
-            json.array
-              [ json.object
-                  ( toMap
-                      { name = json.string "disable git crlf conversion"
-                      , run =
-                          json.string "git config --global core.autocrlf false"
-                      , shell = json.string "bash"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { name = json.string "checkout the source code"
-                      , uses = json.string "actions/checkout@v1"
-                      , with =
-                          json.object (toMap { fetch-depth = json.integer +2 })
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if =
-                          json.string
-                            "success() && !env.SKIP_JOB && github.ref != 'refs/heads/try'"
-                      , name =
-                          json.string
-                            "configure GitHub Actions to kill the build when outdated"
-                      , uses =
-                          json.string
-                            "rust-lang/simpleinfra/github-actions/cancel-outdated-builds@master"
-                      , with =
-                          json.object
-                            ( toMap
-                                { github_token =
-                                    json.string "\${{ secrets.github_token }}"
-                                }
-                            )
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { env =
-                          json.object
-                            ( toMap
-                                { EXTRA_VARIABLES =
-                                    json.string "\${{ toJson(matrix.env) }}"
-                                }
-                            )
-                      , if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "add extra environment variables"
-                      , run = json.string "src/ci/scripts/setup-environment.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "decide whether to skip this job"
-                      , run = json.string "src/ci/scripts/should-skip-this.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "collect CPU statistics"
-                      , run = json.string "src/ci/scripts/collect-cpu-stats.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "show the current environment"
-                      , run = json.string "src/ci/scripts/dump-environment.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install awscli"
-                      , run = json.string "src/ci/scripts/install-awscli.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install sccache"
-                      , run = json.string "src/ci/scripts/install-sccache.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install clang"
-                      , run = json.string "src/ci/scripts/install-clang.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install WIX"
-                      , run = json.string "src/ci/scripts/install-wix.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install InnoSetup"
-                      , run = json.string "src/ci/scripts/install-innosetup.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name =
-                          json.string
-                            "ensure the build happens on a partition with enough space"
-                      , run = json.string "src/ci/scripts/symlink-build-dir.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "disable git crlf conversion"
-                      , run =
-                          json.string
-                            "src/ci/scripts/disable-git-crlf-conversion.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install MSYS2"
-                      , run = json.string "src/ci/scripts/install-msys2.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install MSYS2 packages"
-                      , run =
-                          json.string "src/ci/scripts/install-msys2-packages.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install MinGW"
-                      , run = json.string "src/ci/scripts/install-mingw.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "install ninja"
-                      , run = json.string "src/ci/scripts/install-ninja.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "enable ipv6 on Docker"
-                      , run = json.string "src/ci/scripts/enable-docker-ipv6.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "disable git crlf conversion"
-                      , run =
-                          json.string
-                            "src/ci/scripts/disable-git-crlf-conversion.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "checkout submodules"
-                      , run =
-                          json.string "src/ci/scripts/checkout-submodules.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "ensure line endings are correct"
-                      , run =
-                          json.string "src/ci/scripts/verify-line-endings.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { env =
-                          json.object
-                            ( toMap
-                                { AWS_ACCESS_KEY_ID =
-                                    json.string
-                                      "\${{ env.CACHES_AWS_ACCESS_KEY_ID }}"
-                                , AWS_SECRET_ACCESS_KEY =
-                                    json.string
-                                      "\${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', env.CACHES_AWS_ACCESS_KEY_ID)] }}"
-                                , TOOLSTATE_REPO_ACCESS_TOKEN =
-                                    json.string
-                                      "\${{ secrets.TOOLSTATE_REPO_ACCESS_TOKEN }}"
-                                }
-                            )
-                      , if = json.string "success() && !env.SKIP_JOB"
-                      , name = json.string "run the build"
-                      , run = json.string "src/ci/scripts/run-build-from-ci.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              , json.object
-                  ( toMap
-                      { env =
-                          json.object
-                            ( toMap
-                                { AWS_ACCESS_KEY_ID =
-                                    json.string
-                                      "\${{ env.ARTIFACTS_AWS_ACCESS_KEY_ID }}"
-                                , AWS_SECRET_ACCESS_KEY =
-                                    json.string
-                                      "\${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', env.ARTIFACTS_AWS_ACCESS_KEY_ID)] }}"
-                                }
-                            )
-                      , if =
-                          json.string
-                            "success() && !env.SKIP_JOB && (github.event_name == 'push' || env.DEPLOY == '1' || env.DEPLOY_ALT == '1')"
-                      , name = json.string "upload artifacts to S3"
-                      , run = json.string "src/ci/scripts/upload-artifacts.sh"
-                      , shell =
-                          json.string "python src/ci/exec-with-shell.py {0}"
-                      }
-                  )
-              ]
+        , steps = BaseCIJob.steps
         , strategy = make_strategy try_strategy
         , timeout-minutes = json.integer +600
         }
