@@ -256,7 +256,7 @@ jobs:
             os: ubuntu-latest-xl
           - env:
               DIST_REQUIRE_ALL_TOOLS: 1
-              MACOSX_DEPLOYMENT_TARGET: 10.7
+              MACOSX_DEPLOYMENT_TARGET: '10.7'
               NO_DEBUG_ASSERTIONS: 1
               NO_LLVM_ASSERTIONS: 1
               RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
@@ -265,7 +265,7 @@ jobs:
             name: dist-x86_64-apple
             os: macos-latest
           - env:
-              MACOSX_DEPLOYMENT_TARGET: 10.7
+              MACOSX_DEPLOYMENT_TARGET: '10.7'
               NO_DEBUG_ASSERTIONS: 1
               NO_LLVM_ASSERTIONS: 1
               RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
@@ -274,8 +274,8 @@ jobs:
             name: dist-x86_64-apple-alt
             os: macos-latest
           - env:
-              MACOSX_DEPLOYMENT_TARGET: 10.8
-              MACOSX_STD_DEPLOYMENT_TARGET: 10.7
+              MACOSX_DEPLOYMENT_TARGET: '10.8'
+              MACOSX_STD_DEPLOYMENT_TARGET: '10.7'
               NO_DEBUG_ASSERTIONS: 1
               NO_LLVM_ASSERTIONS: 1
               RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
@@ -397,8 +397,6 @@ jobs:
           - dist-i586-gnu-i586-i686-musl
           - dist-i686-freebsd
           - dist-i686-linux
-          - dist-i686-mingw
-          - dist-i686-msvc
           - dist-mips-linux
           - dist-mips64-linux
           - dist-mips64el-linux
@@ -409,26 +407,16 @@ jobs:
           - dist-s390x-linux
           - dist-various-1
           - dist-various-2
-          - dist-x86_64-apple
-          - dist-x86_64-apple-alt
           - dist-x86_64-freebsd
           - dist-x86_64-linux
           - dist-x86_64-linux-alt
-          - dist-x86_64-mingw
-          - dist-x86_64-msvc
-          - dist-x86_64-msvc-alt
           - dist-x86_64-musl
           - dist-x86_64-netbsd
           - i686-gnu
           - i686-gnu-nopt
-          - i686-mingw-1
-          - i686-mingw-2
-          - i686-msvc-1
-          - i686-msvc-2
           - mingw-check
           - test-various
           - wasm32
-          - x86_64-apple
           - x86_64-gnu
           - x86_64-gnu-aux
           - x86_64-gnu-debug
@@ -437,13 +425,25 @@ jobs:
           - x86_64-gnu-llvm-7
           - x86_64-gnu-nopt
           - x86_64-gnu-tools
-          - x86_64-mingw-1
-          - x86_64-mingw-2
+          - dist-x86_64-apple
+          - dist-x86_64-apple-alt
+          - x86_64-apple
           - x86_64-msvc-1
           - x86_64-msvc-2
+          - i686-msvc-1
+          - i686-msvc-2
           - x86_64-msvc-aux
           - x86_64-msvc-cargo
           - x86_64-msvc-tools
+          - i686-mingw-1
+          - i686-mingw-2
+          - x86_64-mingw-1
+          - x86_64-mingw-2
+          - dist-x86_64-msvc
+          - dist-i686-msvc
+          - dist-i686-mingw
+          - dist-x86_64-mingw
+          - dist-x86_64-msvc-alt
     timeout-minutes: 600
   auto-failure:
     if: "!success() && github.event_name == 'push' && github.ref == 'refs/heads/auto' && github.repository == 'rust-lang-ci/rust'"
