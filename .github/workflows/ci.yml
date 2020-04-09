@@ -23,10 +23,11 @@ jobs:
       DEPLOY_BUCKET: rust-lang-gha
       SCCACHE_BUCKET: rust-lang-gha-caches
       TOOLSTATE_ISSUES_API_URL: https://api.github.com/repos/pietroalbini/rust-toolstate/issues
-      TOOLSTATE_PUBLISH: 1
+      TOOLSTATE_PUBLISH: '1'
       TOOLSTATE_REPO: https://github.com/pietroalbini/rust-toolstate
     if: "github.event_name == 'push' && github.ref == 'refs/heads/auto' && github.repository == 'rust-lang-ci/rust'"
     name: auto
+    needs: []
     runs-on: "${{ matrix.os }}"
     steps:
       - name: disable git crlf conversion
@@ -446,6 +447,7 @@ jobs:
           - dist-x86_64-msvc-alt
     timeout-minutes: 600
   auto-failure:
+    env: {}
     if: "!success() && github.event_name == 'push' && github.ref == 'refs/heads/auto' && github.repository == 'rust-lang-ci/rust'"
     name: bors build finished
     needs:
@@ -455,6 +457,7 @@ jobs:
       - name: mark the job as a failure
         run: exit 1
   auto-success:
+    env: {}
     if: "success() && github.event_name == 'push' && github.ref == 'refs/heads/auto' && github.repository == 'rust-lang-ci/rust'"
     name: bors build finished
     needs:
@@ -470,16 +473,17 @@ jobs:
       DEPLOY_BUCKET: rust-lang-gha
       SCCACHE_BUCKET: rust-lang-gha-caches
       TOOLSTATE_ISSUES_API_URL: https://api.github.com/repos/pietroalbini/rust-toolstate/issues
-      TOOLSTATE_PUBLISH: 1
+      TOOLSTATE_PUBLISH: '1'
       TOOLSTATE_REPO: https://github.com/pietroalbini/rust-toolstate
     if: "github.event_name == 'push' && github.ref == 'refs/heads/master' && github.repository == 'rust-lang-ci/rust'"
     name: master
+    needs: []
     runs-on: ubuntu-latest
     steps:
       - name: checkout the source code
         uses: "actions/checkout@v1"
         with:
-          fetch-depth: 2
+          fetch-depth: '2'
       - env:
           TOOLSTATE_REPO_ACCESS_TOKEN: "${{ secrets.TOOLSTATE_REPO_ACCESS_TOKEN }}"
         if: "success() && !env.SKIP_JOB"
@@ -493,6 +497,7 @@ jobs:
       TOOLSTATE_REPO: https://github.com/pietroalbini/rust-toolstate
     if: "github.event_name == 'pull_request'"
     name: PR
+    needs: []
     runs-on: "${{ matrix.os }}"
     steps:
       - name: disable git crlf conversion
@@ -626,10 +631,11 @@ jobs:
       DEPLOY_BUCKET: rust-lang-gha
       SCCACHE_BUCKET: rust-lang-gha-caches
       TOOLSTATE_ISSUES_API_URL: https://api.github.com/repos/pietroalbini/rust-toolstate/issues
-      TOOLSTATE_PUBLISH: 1
+      TOOLSTATE_PUBLISH: '1'
       TOOLSTATE_REPO: https://github.com/pietroalbini/rust-toolstate
     if: "github.event_name == 'push' && github.ref == 'refs/heads/try' && github.repository == 'rust-lang-ci/rust'"
     name: try
+    needs: []
     runs-on: "${{ matrix.os }}"
     steps:
       - name: disable git crlf conversion
@@ -752,6 +758,7 @@ jobs:
           - dist-x86_64-linux-alt
     timeout-minutes: 600
   try-failure:
+    env: {}
     if: "!success() && github.event_name == 'push' && github.ref == 'refs/heads/try' && github.repository == 'rust-lang-ci/rust'"
     name: bors build finished
     needs:
@@ -761,6 +768,7 @@ jobs:
       - name: mark the job as a failure
         run: exit 1
   try-success:
+    env: {}
     if: "success() && github.event_name == 'push' && github.ref == 'refs/heads/try' && github.repository == 'rust-lang-ci/rust'"
     name: bors build finished
     needs:
