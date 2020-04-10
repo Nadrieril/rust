@@ -1,6 +1,7 @@
+use serde_yaml::Value as SerdeValue;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use yaml_rust::{Yaml, YamlEmitter, YamlLoader};
+use yaml_rust::{Yaml, YamlEmitter};
 
 /// List of directories containing files to expand. The first tuple element is the source
 /// directory, while the second tuple element is the destination directory.
@@ -8,10 +9,6 @@ use yaml_rust::{Yaml, YamlEmitter, YamlLoader};
 static TO_EXPAND: &[(&str, &str)] = &[
     ("src/ci/github-actions", ".github/workflows"),
 ];
-
-/// Name of a special key that will be removed from all the maps in expanded configuration files.
-/// This key can then be used to contain shared anchors.
-static REMOVE_MAP_KEY: &str = "x--expand-yaml-anchors--remove";
 
 /// Message that will be included at the top of all the expanded files. {source} will be replaced
 /// with the source filename relative to the base path.
@@ -65,11 +62,11 @@ impl App {
             let dest = self.base.join(dest);
             for entry in std::fs::read_dir(&source)? {
                 let path = entry?.path();
-                if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("yml") {
+                if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("dhall") {
                     continue;
                 }
 
-                let dest_path = dest.join(path.file_name().unwrap());
+                let dest_path = dest.join(path.with_extension("yml").file_name().unwrap());
                 self.expand(&path, &dest_path).with_context(|| match self.mode {
                     Mode::Generate => format!(
                         "failed to expand {} into {}",
@@ -84,25 +81,16 @@ impl App {
     }
 
     fn expand(&self, source: &Path, dest: &Path) -> Result<(), Box<dyn Error>> {
-        let content = std::fs::read_to_string(source)
-            .with_context(|| format!("failed to read {}", self.path(source)))?;
+        let document: SerdeValue = serde_dhall::from_file(source)
+            .parse()
+            .with_context(|| format!("failed to parse {}", self.path(source)))?;
+        let document = convert_document(document);
 
         let mut buf = HEADER_MESSAGE.replace("{source}", &self.path(source).to_string());
-
-        let documents = YamlLoader::load_from_str(&content)
-            .with_context(|| format!("failed to parse {}", self.path(source)))?;
-        for mut document in documents.into_iter() {
-            document = yaml_merge_keys::merge_keys(document)
-                .with_context(|| format!("failed to expand {}", self.path(source)))?;
-            document = filter_document(document);
-            document = sort_document(document);
-
-            YamlEmitter::new(&mut buf).dump(&document).map_err(|err| WithContext {
-                context: "failed to serialize the expanded yaml".into(),
-                source: Box::new(err),
-            })?;
-            buf.push('\n');
-        }
+        YamlEmitter::new(&mut buf)
+            .dump(&document)
+            .with_context(|| "failed to serialize the expanded yaml".into())?;
+        buf.push('\n');
 
         match self.mode {
             Mode::Check => {
@@ -129,38 +117,25 @@ impl App {
     }
 }
 
-fn filter_document(document: Yaml) -> Yaml {
-    match document {
-        Yaml::Hash(map) => Yaml::Hash(
+fn convert_document(doc: SerdeValue) -> Yaml {
+    match doc {
+        SerdeValue::Null => Yaml::Null,
+        SerdeValue::Bool(b) => Yaml::Boolean(b),
+        SerdeValue::Number(n) => match n.as_i64() {
+            Some(n) => Yaml::Integer(n),
+            None => Yaml::Real(n.to_string()),
+        },
+        SerdeValue::String(s) => Yaml::String(s),
+        SerdeValue::Sequence(seq) => Yaml::Array(seq.into_iter().map(convert_document).collect()),
+        SerdeValue::Mapping(map) => Yaml::Hash(
             map.into_iter()
-                .filter(|(key, _)| {
-                    if let Yaml::String(string) = &key { string != REMOVE_MAP_KEY } else { true }
+                .filter_map(|(k, v)| {
+                    let k = convert_document(k);
+                    let v = convert_document(v);
+                    if let Yaml::Null = v { None } else { Some((k, v)) }
                 })
-                .map(|(key, value)| (filter_document(key), filter_document(value)))
                 .collect(),
         ),
-        Yaml::Array(vec) => {
-            Yaml::Array(vec.into_iter().map(|item| filter_document(item)).collect())
-        }
-        other => other,
-    }
-}
-
-/// Sort keys in hashes
-fn sort_document(document: Yaml) -> Yaml {
-    match document {
-        Yaml::Hash(map) => {
-            let mut entries: Vec<(Yaml, Yaml)> = map
-                .into_iter()
-                .map(|(key, value)| (sort_document(key), sort_document(value)))
-                .collect();
-            // Had lifetime issues with sort_by_key
-            entries.sort_unstable_by(|(k1, _), (k2, _)| k1.cmp(k2));
-
-            Yaml::Hash(entries.into_iter().collect())
-        }
-        Yaml::Array(vec) => Yaml::Array(vec.into_iter().map(|item| sort_document(item)).collect()),
-        other => other,
     }
 }
 

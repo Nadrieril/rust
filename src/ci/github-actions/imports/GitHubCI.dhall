@@ -54,18 +54,18 @@ let Step =
           { name : Text
           , run : Optional Text
           , env : Map Text Text
-          , with : Map Text Text
-          , if : Optional Text
+          , `with` : Map Text Text
+          , `if` : Optional Text
           , uses : Optional Text
           , shell : Optional Text
           }
       , default =
         { env = Prelude.Map.empty Text Text
-        , if = None Text
+        , `if` = None Text
         , run = None Text
         , shell = None Text
         , uses = None Text
-        , with = Prelude.Map.empty Text Text
+        , `with` = Prelude.Map.empty Text Text
         }
       }
 
@@ -73,8 +73,8 @@ let StepOutput =
       { name : Text
       , run : Optional Text
       , env : Optional (Map Text Text)
-      , with : Optional (Map Text Text)
-      , if : Optional Text
+      , `with` : Optional (Map Text Text)
+      , `if` : Optional Text
       , uses : Optional Text
       , shell : Optional Text
       }
@@ -88,19 +88,19 @@ let make_step =
               then  None (Map Text Text)
 
               else  Some x.env
-          , with =
-                    if Prelude.List.null (Prelude.Map.Entry Text Text) x.with
+          , `with` =
+                    if Prelude.List.null (Prelude.Map.Entry Text Text) x.`with`
 
               then  None (Map Text Text)
 
-              else  Some x.with
+              else  Some x.`with`
           }
 
 let Job =
       { Type =
           { name : Text
           , env : Map Text Text
-          , if : List Condition
+          , `if` : List Condition
           , strategy : Strategy
           , steps : List Step.Type
           , timeout-minutes : Optional Natural
@@ -118,7 +118,7 @@ let Job =
 let JobOutput =
       { name : Text
       , env : Map Text Text
-      , if : Text
+      , `if` : Text
       , strategy : StrategyOutput
       , steps : List StepOutput
       , timeout-minutes : Optional Natural
@@ -130,7 +130,7 @@ let make_job =
         λ(job : Job.Type)
       →   job
         ⫽ { strategy = make_strategy job.strategy
-          , if = make_condition job.if
+          , `if` = make_condition job.`if`
           , steps = Prelude.List.map Step.Type StepOutput make_step job.steps
           }
 

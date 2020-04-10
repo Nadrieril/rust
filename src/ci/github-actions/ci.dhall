@@ -1,4 +1,18 @@
-let GitHubCI = ./GitHubCI.dhall
+-- ######################################################
+-- #   WARNING! Action needed when changing this file   #
+-- ######################################################
+--
+-- This file is expanded by a tool in the repository, and the expansion is
+-- committed as well.
+--
+-- After you make any change to the file you'll need to run this command:
+--
+--   ./x.py run src/tools/expand-yaml-anchors
+--
+-- ...and commit the file it updated in addition to this one. If you forget this
+-- step CI will fail.
+
+let GitHubCI = ./imports/GitHubCI.dhall
 
 let MatrixEntry = GitHubCI.MatrixEntry
 
@@ -54,7 +68,7 @@ let Windows_XL =
 
 let StepBase =
       { Type = Step.Type
-      , default = Step.default ⫽ { if = Some "success() && !env.SKIP_JOB" }
+      , default = Step.default ⫽ { `if` = Some "success() && !env.SKIP_JOB" }
       }
 
 let
@@ -80,7 +94,7 @@ let checkout_step =
       Step::{
       , name = "checkout the source code"
       , uses = Some "actions/checkout@v1"
-      , with = toMap { fetch-depth = "2" }
+      , `with` = toMap { fetch-depth = "2" }
       }
 
 let base_ci_steps =
@@ -92,11 +106,11 @@ let base_ci_steps =
       , checkout_step
       , StepBase::{
         , name = "configure GitHub Actions to kill the build when outdated"
-        , if = Some
+        , `if` = Some
             "success() && !env.SKIP_JOB && github.ref != 'refs/heads/try'"
         , uses = Some
             "rust-lang/simpleinfra/github-actions/cancel-outdated-builds@master"
-        , with = toMap { github_token = "\${{ secrets.github_token }}" }
+        , `with` = toMap { github_token = "\${{ secrets.github_token }}" }
         }
       , StepRun::{
         , name = "add extra environment variables"
@@ -212,7 +226,7 @@ let base_ci_steps =
             , AWS_SECRET_ACCESS_KEY =
                 "\${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', env.ARTIFACTS_AWS_ACCESS_KEY_ID)] }}"
             }
-        , if =
+        , `if` =
             let
 
                 -- Adding a condition on DEPLOY=1 or DEPLOY_ALT=1 is not needed as all deploy
@@ -249,7 +263,7 @@ let
       → λ(success : Bool)
       → Job::{
         , name = "bors build finished"
-        , if =
+        , `if` =
           [ Condition.success success
           , Condition.event_name "push"
           , Condition.ref "refs/heads/${name}"
@@ -552,14 +566,14 @@ let jobs =
       toMap
         { pr = BaseCIJob::{
           , name = "PR"
-          , if = [ Condition.event_name "pull_request" ]
+          , `if` = [ Condition.event_name "pull_request" ]
           , env = BaseCIJob.default.env # public_variables
           , strategy = pr_strategy
           }
         , try = BaseCIJob::{
           , name = "try"
           , env = BaseCIJob.default.env # prod_variables
-          , if =
+          , `if` =
             [ Condition.event_name "push"
             , Condition.ref "refs/heads/try"
             , Condition.repository "rust-lang-ci/rust"
@@ -570,7 +584,7 @@ let jobs =
         , try-failure = signal_bors "try" False
         , auto = BaseCIJob::{
           , name = "auto"
-          , if =
+          , `if` =
             [ Condition.event_name "push"
             , Condition.ref "refs/heads/auto"
             , Condition.repository "rust-lang-ci/rust"
@@ -582,7 +596,7 @@ let jobs =
         , auto-failure = signal_bors "auto" False
         , master = Job::{
           , name = "master"
-          , if =
+          , `if` =
             [ Condition.event_name "push"
             , Condition.ref "refs/heads/master"
             , Condition.repository "rust-lang-ci/rust"
