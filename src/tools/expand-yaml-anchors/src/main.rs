@@ -1,7 +1,6 @@
-use serde_yaml::Value as SerdeValue;
+use serde_yaml::Value as YamlValue;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use yaml_rust::{Yaml, YamlEmitter};
 
 /// List of directories containing files to expand. The first tuple element is the source
 /// directory, while the second tuple element is the destination directory.
@@ -48,7 +47,7 @@ impl App {
             &["generate", ref base] => (Mode::Generate, PathBuf::from(base)),
             &["check", ref base] => (Mode::Check, PathBuf::from(base)),
             _ => {
-                eprintln!("usage: expand-yaml-anchors <source-dir> <dest-dir>");
+                eprintln!("usage: expand-yaml-anchors [generate | check] <base-dir>");
                 std::process::exit(1);
             }
         };
@@ -81,14 +80,13 @@ impl App {
     }
 
     fn expand(&self, source: &Path, dest: &Path) -> Result<(), Box<dyn Error>> {
-        let document: SerdeValue = serde_dhall::from_file(source)
+        let mut document: YamlValue = serde_dhall::from_file(source)
             .parse()
             .with_context(|| format!("failed to parse {}", self.path(source)))?;
-        let document = convert_document(document);
+        filter_null_in_maps(&mut document);
 
         let mut buf = HEADER_MESSAGE.replace("{source}", &self.path(source).to_string());
-        YamlEmitter::new(&mut buf)
-            .dump(&document)
+        buf += &serde_yaml::to_string(&document)
             .with_context(|| "failed to serialize the expanded yaml".into())?;
         buf.push('\n');
 
@@ -117,25 +115,28 @@ impl App {
     }
 }
 
-fn convert_document(doc: SerdeValue) -> Yaml {
+// Remove null values in mappings
+fn filter_null_in_maps(doc: &mut YamlValue) {
+    use YamlValue::*;
     match doc {
-        SerdeValue::Null => Yaml::Null,
-        SerdeValue::Bool(b) => Yaml::Boolean(b),
-        SerdeValue::Number(n) => match n.as_i64() {
-            Some(n) => Yaml::Integer(n),
-            None => Yaml::Real(n.to_string()),
-        },
-        SerdeValue::String(s) => Yaml::String(s),
-        SerdeValue::Sequence(seq) => Yaml::Array(seq.into_iter().map(convert_document).collect()),
-        SerdeValue::Mapping(map) => Yaml::Hash(
-            map.into_iter()
-                .filter_map(|(k, v)| {
-                    let k = convert_document(k);
-                    let v = convert_document(v);
-                    if let Yaml::Null = v { None } else { Some((k, v)) }
-                })
-                .collect(),
-        ),
+        Null | Bool(_) | Number(_) | String(_) => {}
+        Sequence(seq) => {
+            for x in seq {
+                filter_null_in_maps(x);
+            }
+        }
+        Mapping(map) => {
+            let mut keys_to_remove = Vec::new();
+            for (k, v) in map.iter_mut() {
+                filter_null_in_maps(v);
+                if let Null = v {
+                    keys_to_remove.push(k.clone());
+                }
+            }
+            for k in keys_to_remove {
+                map.remove(&k);
+            }
+        }
     }
 }
 

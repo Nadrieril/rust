@@ -1138,7 +1138,6 @@ version = "0.1.0"
 dependencies = [
  "serde_dhall",
  "serde_yaml",
- "yaml-rust 0.4.3",
 ]
 
 [[package]]
