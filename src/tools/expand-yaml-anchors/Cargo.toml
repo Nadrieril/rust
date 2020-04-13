@@ -5,6 +5,5 @@ authors = ["Pietro Albini <pietro@pietroalbini.org>"]
 edition = "2018"
 
 [dependencies]
-# serde_dhall = "0.5.1"
-serde_dhall = { git = "https://github.com/Nadrieril/dhall-rust" }
+serde_dhall = "0.5.2"
 serde_yaml = "0.8.11"
