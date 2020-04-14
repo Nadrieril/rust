@@ -52,23 +52,23 @@ let
 
 let Linux_XL =
       { Type = MatrixEntry.Type
-      , default = MatrixEntry.default ⫽ { os = "ubuntu-latest-xl" }
+      , default = MatrixEntry.default // { os = "ubuntu-latest-xl" }
       }
 
 let -- We don't have an XL builder for this
     MacOS_XL =
       { Type = MatrixEntry.Type
-      , default = MatrixEntry.default ⫽ { os = "macos-latest" }
+      , default = MatrixEntry.default // { os = "macos-latest" }
       }
 
 let Windows_XL =
       { Type = MatrixEntry.Type
-      , default = MatrixEntry.default ⫽ { os = "windows-latest-xl" }
+      , default = MatrixEntry.default // { os = "windows-latest-xl" }
       }
 
 let StepBase =
       { Type = Step.Type
-      , default = Step.default ⫽ { `if` = Some "success() && !env.SKIP_JOB" }
+      , default = Step.default // { `if` = Some "success() && !env.SKIP_JOB" }
       }
 
 let
@@ -86,8 +86,8 @@ let
     StepRun =
       { Type = StepBase.Type
       , default =
-            StepBase.default
-          ⫽ { shell = Some "python src/ci/exec-with-shell.py {0}" }
+              StepBase.default
+          //  { shell = Some "python src/ci/exec-with-shell.py {0}" }
       }
 
 let checkout_step =
@@ -246,12 +246,12 @@ let base_ci_steps =
 let BaseCIJob =
       { Type = Job.Type
       , default =
-            Job.default
-          ⫽ { timeout-minutes = Some 600
-            , runs-on = "\${{ matrix.os }}"
-            , env = shared_ci_variables
-            , steps = base_ci_steps
-            }
+              Job.default
+          //  { timeout-minutes = Some 600
+              , runs-on = "\${{ matrix.os }}"
+              , env = shared_ci_variables
+              , steps = base_ci_steps
+              }
       }
 
 let
@@ -259,28 +259,32 @@ let
     -- build completed, as there is no practical way to detect when a workflow is
     -- successful listening to webhooks only.
     signal_bors =
-        λ(name : Text)
-      → λ(success : Bool)
-      → Job::{
-        , name = "bors build finished"
-        , `if` =
-          [ Condition.success success
-          , Condition.event_name "push"
-          , Condition.ref "refs/heads/${name}"
-          , Condition.repository "rust-lang-ci/rust"
-          ]
-        , needs = [ name ]
-        , runs-on = "ubuntu-latest"
-        , steps =
-          [ Step::{
-            , name =
-                "mark the job as a ${if success then "success" else "failure"}"
-            , run = Some "exit ${if success then "0" else "1"}"
-            }
-          ]
-        }
+          \(name : Text)
+      ->  \(success : Bool)
+      ->  Job::{
+          , name = "bors build finished"
+          , `if` =
+            [ Condition.success success
+            , Condition.event_name "push"
+            , Condition.ref "refs/heads/${name}"
+            , Condition.repository "rust-lang-ci/rust"
+            ]
+          , needs = [ name ]
+          , runs-on = "ubuntu-latest"
+          , steps =
+            [ Step::{
+              , name =
+                  "mark the job as a ${      if success
 
-let basic_linux_xl = λ(name : Text) → Linux_XL::{ name }
+                                       then  "success"
+
+                                       else  "failure"}"
+              , run = Some "exit ${if success then "0" else "1"}"
+              }
+            ]
+          }
+
+let basic_linux_xl = \(name : Text) -> Linux_XL::{ name }
 
 let pr_strategy =
       [ basic_linux_xl "mingw-check"
