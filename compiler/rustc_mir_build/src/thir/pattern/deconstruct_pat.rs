@@ -862,10 +862,12 @@ impl<'tcx> Constructor<'tcx> {
 /// in `to_ctors`: in some cases we only return `Missing`.
 #[derive(Debug)]
 pub(super) struct SplitWildcard<'tcx> {
-    /// Constructors seen in the matrix.
-    matrix_ctors: Vec<Constructor<'tcx>>,
     /// All the constructors for this type
     all_ctors: SmallVec<[Constructor<'tcx>; 1]>,
+    /// Constructors seen in the matrix.
+    matrix_ctors: Vec<Constructor<'tcx>>,
+    /// Store the seen `Opaque` ctors separately.
+    opaques: Vec<Span>,
 }
 
 impl<'tcx> SplitWildcard<'tcx> {
@@ -984,7 +986,7 @@ impl<'tcx> SplitWildcard<'tcx> {
             // This type is one for which we cannot list constructors, like `str` or `f64`.
             _ => smallvec![NonExhaustive],
         };
-        SplitWildcard { matrix_ctors: Vec::new(), all_ctors }
+        SplitWildcard { all_ctors, matrix_ctors: Vec::new(), opaques: Vec::new() }
     }
 
     /// Pass a set of constructors relative to which to split this one. Don't call twice, it won't
@@ -999,7 +1001,18 @@ impl<'tcx> SplitWildcard<'tcx> {
         // Since `all_ctors` never contains wildcards, this won't recurse further.
         self.all_ctors =
             self.all_ctors.iter().flat_map(|ctor| ctor.split(pcx, ctors.clone())).collect();
-        self.matrix_ctors = ctors.filter(|c| !c.is_wildcard()).cloned().collect();
+        self.matrix_ctors = ctors
+            .filter(|c| !c.is_wildcard())
+            .filter(|c| {
+                if let Opaque(span) = c {
+                    self.opaques.push(*span);
+                    false
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect();
     }
 
     /// Whether there are any value constructors for this type that are not present in the matrix.
@@ -1057,16 +1070,17 @@ impl<'tcx> SplitWildcard<'tcx> {
                 .matrix_ctors
                 .iter()
                 .flat_map(|ctor| ctor.split(pcx, self.matrix_ctors.iter()))
+                .chain(self.opaques.iter().map(|&span| Opaque(span)))
                 .collect();
             return once(ctor).chain(ctors).collect();
         }
 
         // We need to not forget potential opaque constructors.
-        if self.matrix_ctors.iter().any(|c| matches!(c, Opaque(..))) {
+        if !self.opaques.is_empty() {
             return self
                 .all_ctors
                 .into_iter()
-                .chain(self.matrix_ctors.into_iter().filter(|c| matches!(c, Opaque(..))))
+                .chain(self.opaques.iter().map(|&span| Opaque(span)))
                 .collect();
         }
         // All the constructors are present in the matrix, so we just go through them all.
