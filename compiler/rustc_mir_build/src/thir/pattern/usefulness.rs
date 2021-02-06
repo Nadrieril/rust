@@ -1240,6 +1240,7 @@ fn compute_matrix_usefulness<'p, 'tcx>(
     cx: &MatchCheckCtxt<'p, 'tcx>,
     matrix: &mut Matrix<'p, 'tcx>,
     hir_id: HirId,
+    mut gather_witnesses: bool,
     is_top_level: bool,
 ) -> Witnesses<'tcx> {
     debug!("matrix:{:?}", matrix);
@@ -1311,12 +1312,14 @@ fn compute_matrix_usefulness<'p, 'tcx>(
 
     // We list the relevant constructors.
     let mut split_wildcard = SplitWildcard::new(pcx);
+    if gather_witnesses {
+        split_wildcard.add_wildcard();
+    }
     split_wildcard.split(pcx, matrix.last_col().map(move |entry| entry.head_ctor(cx)));
     let split_ctors = split_wildcard.into_ctors(pcx);
     // For each constructor, we try to see for which rows a pattern starting with this ctor could
     // be useful.
     let mut witnesses = Witnesses::new_empty();
-    let mut any_missing = false;
     for ctor in split_ctors.into_iter() {
         debug!("specialize({:?})", ctor);
         // We cache the result of `Fields::wildcards` because it is used a lot.
@@ -1324,12 +1327,10 @@ fn compute_matrix_usefulness<'p, 'tcx>(
         matrix.specialize(pcx, &ctor, &ctor_wild_subpatterns);
         // Expand any or-patterns present in the new last column.
         matrix.expand_or_patterns(cx);
-        let w = compute_matrix_usefulness(cx, matrix, hir_id, false);
+        let w = compute_matrix_usefulness(cx, matrix, hir_id, gather_witnesses, false);
         matrix.undo();
         matrix.undo();
-        if !any_missing {
-            // If we've seen the `Missing` constructor already, we don't further accumulate
-            // witnesses.
+        if gather_witnesses {
             let w = w.apply_constructor(
                 pcx,
                 &ctor,
@@ -1341,7 +1342,11 @@ fn compute_matrix_usefulness<'p, 'tcx>(
             );
             witnesses.extend(w);
         }
-        any_missing = any_missing || matches!(&ctor, Constructor::Missing);
+        if matches!(&ctor, Constructor::Missing) {
+            // If we've seen the `Missing` constructor already, we don't further accumulate
+            // witnesses.
+            gather_witnesses = false;
+        }
     }
     debug!(?witnesses);
     witnesses
@@ -1387,7 +1392,7 @@ crate fn compute_match_usefulness<'p, 'tcx>(
     let mut matrix = Matrix::new(scrut_ty, arms);
     matrix.expand_or_patterns(cx);
 
-    let witnesses = compute_matrix_usefulness(cx, &mut matrix, scrut_hir_id, true);
+    let witnesses = compute_matrix_usefulness(cx, &mut matrix, scrut_hir_id, true, true);
 
     let arm_usefulness: Vec<_> = matrix
         .row_data

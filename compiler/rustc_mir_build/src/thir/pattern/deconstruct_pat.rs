@@ -887,11 +887,15 @@ enum SplitWildcardKind<'tcx> {
 /// This will not preserve the whole list of witnesses, but will preserve whether the list is empty
 /// or not. In fact this is quite natural from the point of view of diagnostics too. This is done
 /// in `to_ctors`: in some cases we only return `Missing`.
+///
+/// TODO: name is wrong, should be `ConstructorSet` or sth.
 #[derive(Debug)]
 pub(super) struct SplitWildcard<'tcx> {
     kind: SplitWildcardKind<'tcx>,
     /// Store the seen `Opaque` ctors separately.
     opaques: Vec<Span>,
+    /// Whether the set contains any wildcards.
+    any_wildcards: bool,
 }
 
 impl<'tcx> SplitWildcard<'tcx> {
@@ -974,6 +978,7 @@ impl<'tcx> SplitWildcard<'tcx> {
                     return SplitWildcard {
                         kind: SplitWildcardKind::Enum { all, in_matrix: Default::default() },
                         opaques: Vec::new(),
+                        any_wildcards: false,
                     };
                 }
             }
@@ -1016,6 +1021,7 @@ impl<'tcx> SplitWildcard<'tcx> {
                 return SplitWildcard {
                     kind: SplitWildcardKind::Single { in_matrix: false },
                     opaques: Vec::new(),
+                    any_wildcards: false,
                 };
             }
             // This type is one for which we cannot list constructors, like `str` or `f64`.
@@ -1024,7 +1030,13 @@ impl<'tcx> SplitWildcard<'tcx> {
         SplitWildcard {
             kind: SplitWildcardKind::Any { all_ctors, matrix_ctors: Vec::new() },
             opaques: Vec::new(),
+            any_wildcards: false,
         }
+    }
+
+    /// ADd a wildcard to the set.
+    pub(super) fn add_wildcard(&mut self) {
+        self.any_wildcards = true;
     }
 
     /// Pass a set of constructors relative to which to split this one. Don't call twice, it won't
@@ -1037,9 +1049,13 @@ impl<'tcx> SplitWildcard<'tcx> {
         'tcx: 'a,
     {
         let opaques = &mut self.opaques;
+        let any_wildcards = &mut self.any_wildcards;
         let cloned_ctors = ctors.clone();
-        let mut ctors = ctors.filter(|c| !c.is_wildcard()).filter(|c| {
-            if let Opaque(span) = c {
+        let mut ctors = ctors.filter(|c| {
+            if c.is_wildcard() {
+                *any_wildcards = true;
+                false
+            } else if let Opaque(span) = c {
                 opaques.push(*span);
                 false
             } else {
@@ -1105,7 +1121,7 @@ impl<'tcx> SplitWildcard<'tcx> {
     /// top of the file, if any constructors are missing we can ignore the present ones.
     pub(super) fn into_ctors(self, pcx: PatCtxt<'_, '_, 'tcx>) -> SmallVec<[Constructor<'tcx>; 1]> {
         let mut ret_ctors: SmallVec<[_; 1]> = smallvec![];
-        let any_missing = self.any_missing(pcx);
+        let any_missing = self.any_wildcards && self.any_missing(pcx);
         if any_missing {
             // Some constructors are missing, thus we can specialize with the special `Missing`
             // constructor, which stands for those constructors that are not seen in the matrix,
