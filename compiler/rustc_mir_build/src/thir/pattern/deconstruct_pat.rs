@@ -1080,19 +1080,6 @@ impl<'tcx> SplitWildcard<'tcx> {
         }
     }
 
-    /// Whether there are any value constructors for this type that are not present in the matrix.
-    fn any_missing(&self, pcx: PatCtxt<'_, '_, 'tcx>) -> bool {
-        match &self.kind {
-            SplitWildcardKind::Single { in_matrix } => !*in_matrix,
-            SplitWildcardKind::Enum { all, in_matrix } => {
-                all.iter().any(|id| !in_matrix.contains(id))
-            }
-            SplitWildcardKind::Any { all_ctors, matrix_ctors } => {
-                all_ctors.iter().any(move |ctor| !ctor.is_covered_by_any(pcx, &matrix_ctors))
-            }
-        }
-    }
-
     /// Iterate over the constructors for this type that are not present in the matrix.
     pub(super) fn list_missing<'a, 'p>(
         &'a self,
@@ -1121,8 +1108,43 @@ impl<'tcx> SplitWildcard<'tcx> {
     /// top of the file, if any constructors are missing we can ignore the present ones.
     pub(super) fn into_ctors(self, pcx: PatCtxt<'_, '_, 'tcx>) -> SmallVec<[Constructor<'tcx>; 1]> {
         let mut ret_ctors: SmallVec<[_; 1]> = smallvec![];
-        let any_missing = self.any_wildcards && self.any_missing(pcx);
-        if any_missing {
+        // Whether there are any value constructors for this type that are not present in the matrix.
+        let mut any_missing = false;
+        match &self.kind {
+            SplitWildcardKind::Single { in_matrix } => {
+                if *in_matrix {
+                    ret_ctors.push(Single);
+                } else {
+                    any_missing = true;
+                }
+            }
+            SplitWildcardKind::Enum { all, in_matrix } => {
+                for id in all {
+                    if in_matrix.contains(id) {
+                        ret_ctors.push(Variant(*id))
+                    } else {
+                        any_missing = true;
+                    }
+                }
+            }
+            SplitWildcardKind::Any { matrix_ctors, all_ctors } => {
+                any_missing =
+                    all_ctors.iter().any(|ctor| !ctor.is_covered_by_any(pcx, &matrix_ctors));
+                if self.any_wildcards && any_missing {
+                    let seen_ctors: FxHashSet<Constructor<'_>> = matrix_ctors
+                        .iter()
+                        .flat_map(|ctor| ctor.split(pcx, matrix_ctors.iter()))
+                        .collect();
+                    ret_ctors.extend(seen_ctors);
+                } else {
+                    // This is only to preserve diagnostic order.
+                    ret_ctors.extend(all_ctors.iter().cloned());
+                }
+            }
+        }
+
+        let any_matched_by_wildcards = self.any_wildcards && any_missing;
+        if any_matched_by_wildcards {
             // Some constructors are missing, thus we can specialize with the special `Missing`
             // constructor, which stands for those constructors that are not seen in the matrix,
             // and matches the same rows as any of them (namely the wildcard rows). See the top of
@@ -1157,31 +1179,7 @@ impl<'tcx> SplitWildcard<'tcx> {
                 SplitWildcardKind::Any { matrix_ctors, .. } => matrix_ctors.is_empty(),
             };
             let ctor = if !all_missing || report_when_all_missing { Missing } else { Wildcard };
-            ret_ctors.push(ctor);
-        }
-
-        match self.kind {
-            SplitWildcardKind::Single { in_matrix } => {
-                if in_matrix {
-                    ret_ctors.push(Single);
-                }
-            }
-            SplitWildcardKind::Enum { all, in_matrix } => {
-                ret_ctors
-                    .extend(all.iter().filter(|id| in_matrix.contains(id)).copied().map(Variant));
-            }
-            SplitWildcardKind::Any { matrix_ctors, all_ctors } => {
-                if any_missing {
-                    let seen_ctors: FxHashSet<Constructor<'_>> = matrix_ctors
-                        .iter()
-                        .flat_map(|ctor| ctor.split(pcx, matrix_ctors.iter()))
-                        .collect();
-                    ret_ctors.extend(seen_ctors);
-                } else {
-                    // This is only to preserve diagnostic order.
-                    ret_ctors.extend(all_ctors);
-                }
-            }
+            ret_ctors.insert(0, ctor);
         }
 
         if !self.opaques.is_empty() {
