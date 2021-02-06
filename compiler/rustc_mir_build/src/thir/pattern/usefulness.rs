@@ -1112,8 +1112,9 @@ impl<'tcx> Witnesses<'tcx> {
             // it. For example, if `ctor` is a `Constructor::Variant` for
             // `Option::Some`, we get the pattern `Some(_)`.
             let new_patterns: Vec<_> = split_wildcard
-                .iter_missing(pcx)
-                .map(|missing_ctor| Fields::wildcards(pcx, missing_ctor).apply(pcx, missing_ctor))
+                .list_missing(pcx)
+                .into_iter()
+                .map(|missing_ctor| Fields::wildcards(pcx, &missing_ctor).apply(pcx, &missing_ctor))
                 .collect();
             witnesses
                 .flat_map(|witness| {

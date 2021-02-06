@@ -845,6 +845,18 @@ impl<'tcx> Constructor<'tcx> {
     }
 }
 
+#[derive(Debug)]
+enum SplitWildcardKind<'tcx> {
+    /// Types with a single constructor, like structs and references.
+    Single { in_matrix: bool },
+    Any {
+        /// All the constructors for this type
+        all_ctors: SmallVec<[Constructor<'tcx>; 1]>,
+        /// Constructors seen in the matrix.
+        matrix_ctors: Vec<Constructor<'tcx>>,
+    },
+}
+
 /// A wildcard constructor that we split relative to the constructors in the matrix, as explained
 /// at the top of the file.
 ///
@@ -862,10 +874,7 @@ impl<'tcx> Constructor<'tcx> {
 /// in `to_ctors`: in some cases we only return `Missing`.
 #[derive(Debug)]
 pub(super) struct SplitWildcard<'tcx> {
-    /// All the constructors for this type
-    all_ctors: SmallVec<[Constructor<'tcx>; 1]>,
-    /// Constructors seen in the matrix.
-    matrix_ctors: Vec<Constructor<'tcx>>,
+    kind: SplitWildcardKind<'tcx>,
     /// Store the seen `Opaque` ctors separately.
     opaques: Vec<Span>,
 }
@@ -982,11 +991,19 @@ impl<'tcx> SplitWildcard<'tcx> {
             }
             ty::Never => smallvec![],
             _ if cx.is_uninhabited(pcx.ty) => smallvec![],
-            ty::Adt(..) | ty::Tuple(..) | ty::Ref(..) => smallvec![Single],
+            ty::Adt(..) | ty::Tuple(..) | ty::Ref(..) => {
+                return SplitWildcard {
+                    kind: SplitWildcardKind::Single { in_matrix: false },
+                    opaques: Vec::new(),
+                };
+            }
             // This type is one for which we cannot list constructors, like `str` or `f64`.
             _ => smallvec![NonExhaustive],
         };
-        SplitWildcard { all_ctors, matrix_ctors: Vec::new(), opaques: Vec::new() }
+        SplitWildcard {
+            kind: SplitWildcardKind::Any { all_ctors, matrix_ctors: Vec::new() },
+            opaques: Vec::new(),
+        }
     }
 
     /// Pass a set of constructors relative to which to split this one. Don't call twice, it won't
@@ -998,40 +1015,68 @@ impl<'tcx> SplitWildcard<'tcx> {
     ) where
         'tcx: 'a,
     {
-        // Since `all_ctors` never contains wildcards, this won't recurse further.
-        self.all_ctors =
-            self.all_ctors.iter().flat_map(|ctor| ctor.split(pcx, ctors.clone())).collect();
-        self.matrix_ctors = ctors
-            .filter(|c| !c.is_wildcard())
-            .filter(|c| {
-                if let Opaque(span) = c {
-                    self.opaques.push(*span);
-                    false
-                } else {
-                    true
-                }
-            })
-            .cloned()
-            .collect();
+        let opaques = &mut self.opaques;
+        let cloned_ctors = ctors.clone();
+        let mut ctors = ctors.filter(|c| !c.is_wildcard()).filter(|c| {
+            if let Opaque(span) = c {
+                opaques.push(*span);
+                false
+            } else {
+                true
+            }
+        });
+        match &mut self.kind {
+            SplitWildcardKind::Single { in_matrix } => {
+                *in_matrix = *in_matrix || ctors.any(|_| true);
+            }
+            SplitWildcardKind::Any { all_ctors, matrix_ctors } => {
+                // Since `all_ctors` never contains wildcards, this won't recurse further.
+                *all_ctors = all_ctors
+                    .iter()
+                    .flat_map(|ctor| ctor.split(pcx, cloned_ctors.clone()))
+                    .collect();
+                *matrix_ctors = ctors.cloned().collect();
+            }
+        }
     }
 
     /// Whether there are any value constructors for this type that are not present in the matrix.
     fn any_missing(&self, pcx: PatCtxt<'_, '_, 'tcx>) -> bool {
-        self.iter_missing(pcx).next().is_some()
+        match &self.kind {
+            SplitWildcardKind::Single { in_matrix } => !*in_matrix,
+            SplitWildcardKind::Any { all_ctors, matrix_ctors } => {
+                all_ctors.iter().any(move |ctor| !ctor.is_covered_by_any(pcx, &matrix_ctors))
+            }
+        }
     }
 
     /// Iterate over the constructors for this type that are not present in the matrix.
-    pub(super) fn iter_missing<'a, 'p>(
+    pub(super) fn list_missing<'a, 'p>(
         &'a self,
         pcx: PatCtxt<'a, 'p, 'tcx>,
-    ) -> impl Iterator<Item = &'a Constructor<'tcx>> + Captures<'p> {
-        self.all_ctors.iter().filter(move |ctor| !ctor.is_covered_by_any(pcx, &self.matrix_ctors))
+    ) -> Vec<Constructor<'tcx>> {
+        match &self.kind {
+            SplitWildcardKind::Single { in_matrix } => {
+                if *in_matrix {
+                    vec![]
+                } else {
+                    vec![Single]
+                }
+            }
+            SplitWildcardKind::Any { all_ctors, matrix_ctors } => all_ctors
+                .iter()
+                .filter(move |ctor| !ctor.is_covered_by_any(pcx, &matrix_ctors))
+                .cloned()
+                .collect(),
+        }
     }
 
     /// Return the set of constructors resulting from splitting the wildcard. As explained at the
     /// top of the file, if any constructors are missing we can ignore the present ones.
     pub(super) fn into_ctors(self, pcx: PatCtxt<'_, '_, 'tcx>) -> SmallVec<[Constructor<'tcx>; 1]> {
-        if self.any_missing(pcx) {
+        let mut ret_ctors: SmallVec<[_; 1]> = smallvec![];
+        let any_missing = self.any_missing(pcx);
+        if any_missing {
             // Some constructors are missing, thus we can specialize with the special `Missing`
             // constructor, which stands for those constructors that are not seen in the matrix,
             // and matches the same rows as any of them (namely the wildcard rows). See the top of
@@ -1060,31 +1105,39 @@ impl<'tcx> SplitWildcard<'tcx> {
             // The exception is: if we are at the top-level, for example in an empty match, we
             // sometimes prefer reporting the list of constructors instead of just `_`.
             let report_when_all_missing = pcx.is_top_level && !IntRange::is_integral(pcx.ty);
-            let ctor = if !self.matrix_ctors.is_empty() || report_when_all_missing {
-                Missing
-            } else {
-                Wildcard
+            let all_missing = match &self.kind {
+                SplitWildcardKind::Single { in_matrix } => !*in_matrix,
+                SplitWildcardKind::Any { matrix_ctors, .. } => matrix_ctors.is_empty(),
             };
-
-            let ctors: FxHashSet<Constructor<'_>> = self
-                .matrix_ctors
-                .iter()
-                .flat_map(|ctor| ctor.split(pcx, self.matrix_ctors.iter()))
-                .chain(self.opaques.iter().map(|&span| Opaque(span)))
-                .collect();
-            return once(ctor).chain(ctors).collect();
+            let ctor = if !all_missing || report_when_all_missing { Missing } else { Wildcard };
+            ret_ctors.push(ctor);
         }
 
-        // We need to not forget potential opaque constructors.
+        match self.kind {
+            SplitWildcardKind::Single { in_matrix } => {
+                if in_matrix {
+                    ret_ctors.push(Single);
+                }
+            }
+            SplitWildcardKind::Any { matrix_ctors, all_ctors } => {
+                if any_missing {
+                    let seen_ctors: FxHashSet<Constructor<'_>> = matrix_ctors
+                        .iter()
+                        .flat_map(|ctor| ctor.split(pcx, matrix_ctors.iter()))
+                        .collect();
+                    ret_ctors.extend(seen_ctors);
+                } else {
+                    // This is only to preserve diagnostic order.
+                    ret_ctors.extend(all_ctors);
+                }
+            }
+        }
+
         if !self.opaques.is_empty() {
-            return self
-                .all_ctors
-                .into_iter()
-                .chain(self.opaques.iter().map(|&span| Opaque(span)))
-                .collect();
+            // We need to not forget potential opaque constructors.
+            ret_ctors.extend(self.opaques.iter().map(|&span| Opaque(span)));
         }
-        // All the constructors are present in the matrix, so we just go through them all.
-        self.all_ctors
+        ret_ctors
     }
 }
 
