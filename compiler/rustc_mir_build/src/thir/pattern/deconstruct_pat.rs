@@ -622,6 +622,13 @@ impl<'tcx> Constructor<'tcx> {
         matches!(self, Wildcard)
     }
 
+    fn as_variant(&self) -> Option<DefId> {
+        match self {
+            Variant(id) => Some(*id),
+            _ => None,
+        }
+    }
+
     fn as_int_range(&self) -> Option<&IntRange> {
         match self {
             IntRange(range) => Some(range),
@@ -849,6 +856,14 @@ impl<'tcx> Constructor<'tcx> {
 enum SplitWildcardKind<'tcx> {
     /// Types with a single constructor, like structs and references.
     Single { in_matrix: bool },
+    /// Enums.
+    Enum {
+        /// Variants found in the matrix.
+        in_matrix: FxHashSet<DefId>,
+        /// All variants for this type. We keep them ordered to ensure consistent error messages.
+        /// Invariant: not empty.
+        all: Vec<DefId>,
+    },
     Any {
         /// All the constructors for this type
         all_ctors: SmallVec<[Constructor<'tcx>; 1]>,
@@ -941,19 +956,25 @@ impl<'tcx> SplitWildcard<'tcx> {
 
                 if is_secretly_empty || is_declared_nonexhaustive {
                     smallvec![NonExhaustive]
-                } else if cx.tcx.features().exhaustive_patterns {
-                    // If `exhaustive_patterns` is enabled, we exclude variants known to be
-                    // uninhabited.
-                    def.variants
-                        .iter()
-                        .filter(|v| {
-                            !v.uninhabited_from(cx.tcx, substs, def.adt_kind(), cx.param_env)
-                                .contains(cx.tcx, cx.module)
-                        })
-                        .map(|v| Variant(v.def_id))
-                        .collect()
                 } else {
-                    def.variants.iter().map(|v| Variant(v.def_id)).collect()
+                    let all = if cx.tcx.features().exhaustive_patterns {
+                        // If `exhaustive_patterns` is enabled, we exclude variants known to be
+                        // uninhabited.
+                        def.variants
+                            .iter()
+                            .filter(|v| {
+                                !v.uninhabited_from(cx.tcx, substs, def.adt_kind(), cx.param_env)
+                                    .contains(cx.tcx, cx.module)
+                            })
+                            .map(|v| v.def_id)
+                            .collect()
+                    } else {
+                        def.variants.iter().map(|v| v.def_id).collect()
+                    };
+                    return SplitWildcard {
+                        kind: SplitWildcardKind::Enum { all, in_matrix: Default::default() },
+                        opaques: Vec::new(),
+                    };
                 }
             }
             ty::Char => {
@@ -1029,6 +1050,9 @@ impl<'tcx> SplitWildcard<'tcx> {
             SplitWildcardKind::Single { in_matrix } => {
                 *in_matrix = *in_matrix || ctors.any(|_| true);
             }
+            SplitWildcardKind::Enum { in_matrix, .. } => {
+                in_matrix.extend(ctors.filter_map(|c| c.as_variant()));
+            }
             SplitWildcardKind::Any { all_ctors, matrix_ctors } => {
                 // Since `all_ctors` never contains wildcards, this won't recurse further.
                 *all_ctors = all_ctors
@@ -1044,6 +1068,9 @@ impl<'tcx> SplitWildcard<'tcx> {
     fn any_missing(&self, pcx: PatCtxt<'_, '_, 'tcx>) -> bool {
         match &self.kind {
             SplitWildcardKind::Single { in_matrix } => !*in_matrix,
+            SplitWildcardKind::Enum { all, in_matrix } => {
+                all.iter().any(|id| !in_matrix.contains(id))
+            }
             SplitWildcardKind::Any { all_ctors, matrix_ctors } => {
                 all_ctors.iter().any(move |ctor| !ctor.is_covered_by_any(pcx, &matrix_ctors))
             }
@@ -1062,6 +1089,9 @@ impl<'tcx> SplitWildcard<'tcx> {
                 } else {
                     vec![Single]
                 }
+            }
+            SplitWildcardKind::Enum { all, in_matrix } => {
+                all.iter().filter(|id| !in_matrix.contains(id)).copied().map(Variant).collect()
             }
             SplitWildcardKind::Any { all_ctors, matrix_ctors } => all_ctors
                 .iter()
@@ -1107,6 +1137,7 @@ impl<'tcx> SplitWildcard<'tcx> {
             let report_when_all_missing = pcx.is_top_level && !IntRange::is_integral(pcx.ty);
             let all_missing = match &self.kind {
                 SplitWildcardKind::Single { in_matrix } => !*in_matrix,
+                SplitWildcardKind::Enum { in_matrix, .. } => in_matrix.is_empty(),
                 SplitWildcardKind::Any { matrix_ctors, .. } => matrix_ctors.is_empty(),
             };
             let ctor = if !all_missing || report_when_all_missing { Missing } else { Wildcard };
@@ -1118,6 +1149,10 @@ impl<'tcx> SplitWildcard<'tcx> {
                 if in_matrix {
                     ret_ctors.push(Single);
                 }
+            }
+            SplitWildcardKind::Enum { all, in_matrix } => {
+                ret_ctors
+                    .extend(all.iter().filter(|id| in_matrix.contains(id)).copied().map(Variant));
             }
             SplitWildcardKind::Any { matrix_ctors, all_ctors } => {
                 if any_missing {
