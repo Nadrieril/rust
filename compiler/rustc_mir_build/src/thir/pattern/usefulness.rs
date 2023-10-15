@@ -12,85 +12,196 @@
 //!
 //! -----
 //!
-//! This file includes the logic for exhaustiveness and reachability checking for pattern-matching.
-//! Specifically, given a list of patterns for a type, we can tell whether:
-//! (a) each pattern is reachable (reachability)
+//! This file contains the logic for exhaustiveness and reachability checking for pattern-matching.
+//! Specifically, given a list of patterns in a match, we can tell whether:
+//! (a) a given pattern is reachable (reachability)
 //! (b) the patterns cover every possible value for the type (exhaustiveness)
 //!
 //! The algorithm implemented here is a modified version of the one described in [this
-//! paper](http://moscova.inria.fr/~maranget/papers/warn/index.html). We have however generalized
-//! it to accommodate the variety of patterns that Rust supports. We thus explain our version here,
+//! paper](http://moscova.inria.fr/~maranget/papers/warn/index.html). We have however generalized it
+//! to accommodate the variety of patterns that Rust supports. We thus explain our version here,
 //! without being as rigorous.
 //!
 //!
 //! # Summary
 //!
-//! The core of the algorithm is the notion of "usefulness". A pattern `q` is said to be *useful*
-//! relative to another pattern `p` of the same type if there is a value that is matched by `q` and
-//! not matched by `p`. This generalizes to many `p`s: `q` is useful w.r.t. a list of patterns
-//! `p_1 .. p_n` if there is a value that is matched by `q` and by none of the `p_i`. We write
-//! `usefulness(p_1 .. p_n, q)` for a function that returns a list of such values. The aim of this
-//! file is to compute it efficiently.
+//! The algorithm is given as input a list of patterns, one for each match arm, and computes the
+//! following:
+//! - a (hopefully empty) set of values that match none of the patterns,
+//! - for each subpattern (taking into account or-patterns), whether it's matched by any value that
+//!     isn't caught by a pattern before it.
 //!
-//! This is enough to compute reachability: a pattern in a `match` expression is reachable iff it
-//! is useful w.r.t. the patterns above it:
-//! ```rust
-//! # fn foo(x: Option<i32>) {
-//! match x {
-//!     Some(_) => {},
-//!     None => {},    // reachable: `None` is matched by this but not the branch above
-//!     Some(0) => {}, // unreachable: all the values this matches are already matched by
-//!                    // `Some(_)` above
-//! }
-//! # }
-//! ```
-//!
-//! This is also enough to compute exhaustiveness: a match is exhaustive iff the wildcard `_`
-//! pattern is _not_ useful w.r.t. the patterns in the match. The values returned by `usefulness`
-//! are used to tell the user which values are missing.
-//! ```compile_fail,E0004
-//! # fn foo(x: Option<i32>) {
-//! match x {
-//!     Some(0) => {},
-//!     None => {},
-//!     // not exhaustive: `_` is useful because it matches `Some(1)`
-//! }
-//! # }
-//! ```
+//! To a first approximation, the algorithm works by trying all possible values for the type being
+//! matched on, and determining which arm(s) match which value. To make this tractable we cleverly
+//! group together values that would match the same set of arms.
 //!
 //! The entrypoint of this file is the [`compute_match_usefulness`] function, which computes
-//! reachability for each match branch and exhaustiveness for the whole match.
+//! reachability for each subpattern and exhaustiveness for the whole match.
+//!
+//!
+//! # Example
+//!
+//! A picture is worth a thousand words. Let's watch the algorithm run before we dig into concepts.
+//!
+//! ```rust,ignore(example)
+//! match x {
+//!     Pair(Some(0), _) => 1,
+//!     Pair(_, false) => 2,
+//!     Pair(Some(0), false) => 3,
+//! }
+//! ```
+//!
+//! We start:
+//!  ┐ Patterns:
+//!  │   1. `[Pair(Some(0), _)]`
+//!  │   2. `[Pair(_, false)]`
+//!  │   3. `[Pair(Some(0), false)]`
+//!  │
+//!  │ Dig into `Pair`:
+//!  ├─┐ Patterns:
+//!  │ │   1. `[Some(0), _]`
+//!  │ │   2. `[_, false]`
+//!  │ │   3. `[Some(0), false]`
+//!  │ │
+//!  │ │ Dig into `Some`:
+//!  │ ├─┐ Patterns:
+//!  │ │ │   1. `[0, _]`
+//!  │ │ │   2. `[_, false]`
+//!  │ │ │   3. `[0, false]`
+//!  │ │ │
+//!  │ │ │ Dig into `0`:
+//!  │ │ ├─┐ Patterns:
+//!  │ │ │ │   1. `[_]`
+//!  │ │ │ │   3. `[false]`
+//!  │ │ │ │
+//!  │ │ │ │ Dig into `true`:
+//!  │ │ │ ├─┐ Patterns:
+//!  │ │ │ │ │   1. `[]`
+//!  │ │ │ │ │
+//!  │ │ │ │ │ We note arm 1 is reachable (by `Pair(Some(0), true)`).
+//!  │ │ │ ├─┘
+//!  │ │ │ │
+//!  │ │ │ │ Dig into `false`:
+//!  │ │ │ ├─┐ Patterns:
+//!  │ │ │ │ │   1. `[]`
+//!  │ │ │ │ │   3. `[]`
+//!  │ │ │ │ │
+//!  │ │ │ │ │ We note arm 1 is reachable (by `Pair(Some(0), false)`).
+//!  │ │ │ ├─┘
+//!  │ │ ├─┘
+//!  │ │ │
+//!  │ │ │ Dig into `1..`:
+//!  │ │ ├─┐ Patterns:
+//!  │ │ │ │   2. `[false]`
+//!  │ │ │ │
+//!  │ │ │ │ Dig into `true`:
+//!  │ │ │ ├─┐ Patterns:
+//!  │ │ │ │ │   // no rows left
+//!  │ │ │ │ │
+//!  │ │ │ │ │ We have found an unmatched value! This gives us a witness.
+//!  │ │ │ │ │ New witnesses:
+//!  │ │ │ │ │   `[]`
+//!  │ │ │ ├─┘
+//!  │ │ │ │ New witnesses from `true`:
+//!  │ │ │ │   `[true]`
+//!  │ │ │ │
+//!  │ │ │ │ Dig into `false`:
+//!  │ │ │ ├─┐ Patterns:
+//!  │ │ │ │ │   2. `[]`
+//!  │ │ │ │ │
+//!  │ │ │ │ │ We note arm 2 is reachable (by `Pair(Some(1..), false)`).
+//!  │ │ │ ├─┘
+//!  │ │ │ │
+//!  │ │ │ │ Total witnesses for `1..`:
+//!  │ │ │ │   `[true]`
+//!  │ │ ├─┘
+//!  │ │ │ New witnesses from `1..`:
+//!  │ │ │   `[1.., true]`
+//!  │ │ │
+//!  │ │ │ Total witnesses for `Some`:
+//!  │ │ │   `[1.., true]`
+//!  │ ├─┘
+//!  │ │ New witnesses from `Some`:
+//!  │ │   `[Some(1..), true]`
+//!  │ │
+//!  │ │ Dig into `None`:
+//!  │ ├─┐ Patterns:
+//!  │ │ │   2. `[false]`
+//!  │ │ │
+//!  │ │ │ Dig into `true`:
+//!  │ │ ├─┐ Patterns:
+//!  │ │ │ │   // no rows left
+//!  │ │ │ │
+//!  │ │ │ │ We have found an unmatched value! This gives us a witness.
+//!  │ │ │ │ New witnesses:
+//!  │ │ │ │   `[]`
+//!  │ │ ├─┘
+//!  │ │ │ New witnesses from `true`:
+//!  │ │ │   `[true]`
+//!  │ │ │
+//!  │ │ │ Dig into `false`:
+//!  │ │ ├─┐ Patterns:
+//!  │ │ │ │   2. `[]`
+//!  │ │ │ │
+//!  │ │ │ │ We note arm 2 is reachable (by `Pair(None, false)`).
+//!  │ │ ├─┘
+//!  │ │ │
+//!  │ │ │ Total witnesses for `None`:
+//!  │ │ │   `[true]`
+//!  │ ├─┘
+//!  │ │ New witnesses from `None`:
+//!  │ │   `[None, true]`
+//!  │ │
+//!  │ │ Total witnesses for `Pair`:
+//!  │ │   `[Some(1..), true]`
+//!  │ │   `[None, true]`
+//!  ├─┘
+//!  │ New witnesses from `Pair`:
+//!  │   `[Pair(Some(1..), true)]`
+//!  │   `[Pair(None, true)]`
+//!  │
+//!  │ Final witnesses:
+//!  │   `[Pair(Some(1..), true)]`
+//!  │   `[Pair(None, true)]`
+//!  ┘
+//!
+//! We conclude:
+//! - Arm 3 is unreachable (it was never marked as reachable);
+//! - The match is not exhaustive;
+//! - Adding `Pair(Some(1..), true)` and `Pair(None, true)` would make the match exhaustive.
+//!
+//! Note how we unpeel values layer by layer. This is the topic of the next section.
 //!
 //!
 //! # Constructors and fields
 //!
 //! Note: we will often abbreviate "constructor" as "ctor".
 //!
-//! The idea that powers everything that is done in this file is the following: a (matchable)
-//! value is made from a constructor applied to a number of subvalues. Examples of constructors are
+//! The idea that powers everything that is done in this file is the following: a (matchable) value
+//! is made from a constructor applied to a number of subvalues. Examples of constructors are
 //! `Some`, `None`, `(,)` (the 2-tuple constructor), `Foo {..}` (the constructor for a struct
 //! `Foo`), and `2` (the constructor for the number `2`). This is natural when we think of
 //! pattern-matching, and this is the basis for what follows.
 //!
-//! Some of the ctors listed above might feel weird: `None` and `2` don't take any arguments.
-//! That's ok: those are ctors that take a list of 0 arguments; they are the simplest case of
-//! ctors. We treat `2` as a ctor because `u64` and other number types behave exactly like a huge
-//! `enum`, with one variant for each number. This allows us to see any matchable value as made up
-//! from a tree of ctors, each having a set number of children. For example: `Foo { bar: None,
-//! baz: Ok(0) }` is made from 4 different ctors, namely `Foo{..}`, `None`, `Ok` and `0`.
+//! Some of the ctors listed above might feel weird: `None` and `2` don't take any arguments. That's
+//! ok: those are ctors that take a list of 0 arguments; they are the simplest case of ctors. We
+//! treat `2` as a ctor because `u64` and other number types behave exactly like a huge `enum`, with
+//! one variant for each number. This allows us to see any matchable value as made up from a tree of
+//! ctors, each having a set number of children. For example: `Foo { bar: None, baz: Ok(0) }` is
+//! made from 4 different ctors, namely `Foo{..}`, `None`, `Ok` and `0`.
 //!
-//! This idea can be extended to patterns: they are also made from constructors applied to fields.
-//! A pattern for a given type is allowed to use all the ctors for values of that type (which we
-//! call "value constructors"), but there are also pattern-only ctors. The most important one is
-//! the wildcard (`_`), and the others are integer ranges (`0..=10`), variable-length slices (`[x,
+//! This idea can be extended to patterns: they are also made from constructors applied to fields. A
+//! pattern for a given type is allowed to use all the ctors for values of that type (which we call
+//! "value constructors"), but there are also pattern-only ctors. The most important one is the
+//! wildcard (`_`), and the others are integer ranges (`0..=10`), variable-length slices (`[x,
 //! ..]`), and or-patterns (`Ok(0) | Err(_)`). Examples of valid patterns are `42`, `Some(_)`, `Foo
 //! { bar: Some(0) | None, baz: _ }`. Note that a binder in a pattern (e.g. `Some(x)`) matches the
 //! same values as a wildcard (e.g. `Some(_)`), so we treat both as wildcards.
 //!
-//! From this deconstruction we can compute whether a given value matches a given pattern; we
-//! simply look at ctors one at a time. Given a pattern `p` and a value `v`, we want to compute
-//! `matches!(v, p)`. It's mostly straightforward: we compare the head ctors and when they match
-//! we compare their fields recursively. A few representative examples:
+//! From this deconstruction we can compute whether a given value matches a given pattern; we simply
+//! look at ctors one at a time. Given a pattern `p` and a value `v`, we want to compute
+//! `matches!(v, p)`. It's mostly straightforward: we compare the head ctors and when they match we
+//! compare their fields recursively. A few representative examples:
 //!
 //! - `matches!(v, _) := true`
 //! - `matches!((v0,  v1), (p0,  p1)) := matches!(v0, p0) && matches!(v1, p1)`
@@ -104,7 +215,7 @@
 //!
 //! Constructors, fields and relevant operations are defined in the [`super::deconstruct_pat`] module.
 //!
-//! Note: this constructors/fields distinction may not straightforwardly apply to every Rust type.
+//! Note: this constructors/fields distinction does not straightforwardly apply to every Rust type.
 //! For example a value of type `Rc<u64>` can't be deconstructed that way, and `&str` has an
 //! infinitude of constructors. There are also subtleties with visibility of fields and
 //! uninhabitedness and various other things. The constructors idea can be extended to handle most
@@ -272,7 +383,7 @@
 //! //==>> we have tried all the constructors. The output is the single witness `[Some(false)]`.
 //! ```
 //!
-//! This computation is done in [`is_useful`]. In practice we don't care about the list of
+//! This computation is done in `is_useful`. In practice we don't care about the list of
 //! witnesses when computing reachability; we only need to know whether any exist. We do keep the
 //! witnesses when computing exhaustiveness to report them to the user.
 //!
@@ -287,7 +398,7 @@
 //! group together constructors that behave the same.
 //!
 //! The details are not necessary to understand this file, so we explain them in
-//! [`super::deconstruct_pat`]. Splitting is done by the [`Constructor::split`] function.
+//! [`super::deconstruct_pat`]. Splitting is done by the `Constructor::split` function.
 //!
 //! # Constants in patterns
 //!
@@ -305,8 +416,6 @@
 //! stay as a full constant and become an `Opaque` pattern. These `Opaque` patterns do not participate
 //! in exhaustiveness, specialization or overlap checking.
 
-use self::ArmType::*;
-use self::Usefulness::*;
 use super::deconstruct_pat::{Constructor, ConstructorSet, DeconstructedPat, IntRange, WitnessPat};
 use crate::errors::{NonExhaustiveOmittedPattern, Overlap, OverlappingRangeEndpoints, Uncovered};
 
@@ -398,15 +507,27 @@ impl<'a, 'p, 'tcx> fmt::Debug for PatCtxt<'a, 'p, 'tcx> {
 pub(crate) struct PatStack<'p, 'tcx> {
     pats: SmallVec<[&'p DeconstructedPat<'p, 'tcx>; 2]>,
     is_under_guard: bool,
+    /// The row (in the matrix) of the `PatStack` from which this one is derived. When there is
+    /// none, this is the id of the arm.
+    parent_row: usize,
+    is_useful: bool,
 }
 
 impl<'p, 'tcx> PatStack<'p, 'tcx> {
-    fn from_pattern(pat: &'p DeconstructedPat<'p, 'tcx>, is_under_guard: bool) -> Self {
-        PatStack { pats: smallvec![pat], is_under_guard }
+    fn from_pattern(
+        pat: &'p DeconstructedPat<'p, 'tcx>,
+        parent_row: usize,
+        is_under_guard: bool,
+    ) -> Self {
+        PatStack { pats: smallvec![pat], parent_row, is_under_guard, is_useful: false }
     }
 
-    fn from_vec(vec: SmallVec<[&'p DeconstructedPat<'p, 'tcx>; 2]>, is_under_guard: bool) -> Self {
-        PatStack { pats: vec, is_under_guard }
+    fn from_vec(
+        vec: SmallVec<[&'p DeconstructedPat<'p, 'tcx>; 2]>,
+        parent_row: usize,
+        is_under_guard: bool,
+    ) -> Self {
+        PatStack { pats: vec, parent_row, is_under_guard, is_useful: false }
     }
 
     fn is_empty(&self) -> bool {
@@ -425,29 +546,15 @@ impl<'p, 'tcx> PatStack<'p, 'tcx> {
         self.pats.iter().copied()
     }
 
-    // Recursively expand the first pattern into its subpatterns. Only useful if the pattern is an
+    // Expand the first pattern into its subpatterns. Only useful if the pattern is an
     // or-pattern. Panics if `self` is empty.
     fn expand_or_pat<'a>(&'a self) -> impl Iterator<Item = PatStack<'p, 'tcx>> + Captures<'a> {
         self.head().iter_fields().map(move |pat| {
-            let mut new_patstack = PatStack::from_pattern(pat, self.is_under_guard);
+            let mut new_patstack =
+                PatStack::from_pattern(pat, self.parent_row, self.is_under_guard);
             new_patstack.pats.extend_from_slice(&self.pats[1..]);
             new_patstack
         })
-    }
-
-    // Recursively expand all patterns into their subpatterns and push each `PatStack` to matrix.
-    fn expand_and_extend<'a>(&'a self, matrix: &mut Matrix<'p, 'tcx>) {
-        if !self.is_empty() && self.head().is_or_pat() {
-            for pat in self.head().iter_fields() {
-                let mut new_patstack = PatStack::from_pattern(pat, self.is_under_guard);
-                new_patstack.pats.extend_from_slice(&self.pats[1..]);
-                if !new_patstack.is_empty() && new_patstack.head().is_or_pat() {
-                    new_patstack.expand_and_extend(matrix);
-                } else if !new_patstack.is_empty() {
-                    matrix.push(new_patstack);
-                }
-            }
-        }
     }
 
     /// This computes `S(self.head().ctor(), self)`. See top of the file for explanations.
@@ -460,12 +567,13 @@ impl<'p, 'tcx> PatStack<'p, 'tcx> {
         &self,
         pcx: &PatCtxt<'_, 'p, 'tcx>,
         ctor: &Constructor<'tcx>,
+        parent_row: usize,
     ) -> PatStack<'p, 'tcx> {
         // We pop the head pattern and push the new fields extracted from the arguments of
         // `self.head()`.
         let mut new_fields: SmallVec<[_; 2]> = self.head().specialize(pcx, ctor);
         new_fields.extend_from_slice(&self.pats[1..]);
-        PatStack::from_vec(new_fields, self.is_under_guard)
+        PatStack::from_vec(new_fields, parent_row, self.is_under_guard)
     }
 }
 
@@ -482,8 +590,8 @@ impl<'p, 'tcx> fmt::Debug for PatStack<'p, 'tcx> {
 
 /// A 2D matrix.
 #[derive(Clone)]
-pub(super) struct Matrix<'p, 'tcx> {
-    pub rows: Vec<PatStack<'p, 'tcx>>,
+struct Matrix<'p, 'tcx> {
+    rows: Vec<PatStack<'p, 'tcx>>,
 }
 
 impl<'p, 'tcx> Matrix<'p, 'tcx> {
@@ -495,7 +603,9 @@ impl<'p, 'tcx> Matrix<'p, 'tcx> {
     /// expands it.
     fn push(&mut self, row: PatStack<'p, 'tcx>) {
         if !row.is_empty() && row.head().is_or_pat() {
-            row.expand_and_extend(self);
+            for new_row in row.expand_or_pat() {
+                self.push(new_row);
+            }
         } else {
             self.rows.push(row);
         }
@@ -506,6 +616,12 @@ impl<'p, 'tcx> Matrix<'p, 'tcx> {
     ) -> impl Iterator<Item = &'a PatStack<'p, 'tcx>> + Clone + DoubleEndedIterator + ExactSizeIterator
     {
         self.rows.iter()
+    }
+    fn rows_mut<'a>(
+        &'a mut self,
+    ) -> impl Iterator<Item = &'a mut PatStack<'p, 'tcx>> + DoubleEndedIterator + ExactSizeIterator
+    {
+        self.rows.iter_mut()
     }
 
     /// Iterate over the first component of each row
@@ -522,9 +638,9 @@ impl<'p, 'tcx> Matrix<'p, 'tcx> {
         ctor: &Constructor<'tcx>,
     ) -> Matrix<'p, 'tcx> {
         let mut matrix = Matrix::empty();
-        for row in &self.rows {
+        for (i, row) in self.rows().enumerate() {
             if ctor.is_covered_by(pcx, row.head().ctor()) {
-                let new_row = row.pop_head_constructor(pcx, ctor);
+                let new_row = row.pop_head_constructor(pcx, ctor, i);
                 matrix.push(new_row);
             }
         }
@@ -566,80 +682,6 @@ impl<'p, 'tcx> fmt::Debug for Matrix<'p, 'tcx> {
         }
         Ok(())
     }
-}
-
-/// This carries the results of computing usefulness, as described at the top of the file. When
-/// checking usefulness of a match branch, we use the `NoWitnesses` variant, which also keeps track
-/// of potential unreachable sub-patterns (in the presence of or-patterns). When checking
-/// exhaustiveness of a whole match, we use the `WithWitnesses` variant, which carries a list of
-/// witnesses of non-exhaustiveness when there are any.
-/// Which variant to use is dictated by `ArmType`.
-#[derive(Debug, Clone)]
-enum Usefulness<'tcx> {
-    /// If we don't care about witnesses, simply remember if the pattern was useful.
-    NoWitnesses { useful: bool },
-    /// Carries a list of witnesses of non-exhaustiveness. If empty, indicates that the whole
-    /// pattern is unreachable.
-    WithWitnesses(WitnessMatrix<'tcx>),
-}
-
-impl<'tcx> Usefulness<'tcx> {
-    fn new_useful(preference: ArmType) -> Self {
-        match preference {
-            // A single (empty) witness of reachability.
-            FakeExtraWildcard => WithWitnesses(WitnessMatrix::new_unit()),
-            RealArm => NoWitnesses { useful: true },
-        }
-    }
-
-    fn new_not_useful(preference: ArmType) -> Self {
-        match preference {
-            FakeExtraWildcard => WithWitnesses(WitnessMatrix::new_empty()),
-            RealArm => NoWitnesses { useful: false },
-        }
-    }
-
-    fn is_useful(&self) -> bool {
-        match self {
-            Usefulness::NoWitnesses { useful } => *useful,
-            Usefulness::WithWitnesses(witnesses) => !witnesses.is_empty(),
-        }
-    }
-
-    /// Combine usefulnesses from two branches. This is an associative operation.
-    fn extend(&mut self, other: Self) {
-        match (&mut *self, other) {
-            (WithWitnesses(_), WithWitnesses(o)) if o.is_empty() => {}
-            (WithWitnesses(s), WithWitnesses(o)) if s.is_empty() => *self = WithWitnesses(o),
-            (WithWitnesses(s), WithWitnesses(o)) => s.extend(o),
-            (NoWitnesses { useful: s_useful }, NoWitnesses { useful: o_useful }) => {
-                *s_useful = *s_useful || o_useful
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    /// After calculating usefulness after a specialization, call this to reconstruct a usefulness
-    /// that makes sense for the matrix pre-specialization. This new usefulness can then be merged
-    /// with the results of specializing with the other constructors.
-    fn apply_constructor(
-        mut self,
-        pcx: &PatCtxt<'_, '_, 'tcx>,
-        matrix: &Matrix<'_, 'tcx>, // used to compute missing ctors
-        ctor: &Constructor<'tcx>,
-    ) -> Self {
-        match &mut self {
-            NoWitnesses { .. } => {}
-            WithWitnesses(witnesses) => witnesses.apply_constructor(pcx, matrix, ctor),
-        }
-        self
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-enum ArmType {
-    FakeExtraWildcard,
-    RealArm,
 }
 
 /// A partially-constructed witness of non-exhaustiveness for error reporting, represented as a list
@@ -765,15 +807,16 @@ impl<'tcx> WitnessMatrix<'tcx> {
     fn apply_constructor(
         &mut self,
         pcx: &PatCtxt<'_, '_, 'tcx>,
-        matrix: &Matrix<'_, 'tcx>, // used to compute missing ctors
+        missing_ctors: &[Constructor<'tcx>],
         ctor: &Constructor<'tcx>,
     ) {
         if self.is_empty() {
             return;
         }
-        if matches!(ctor, Constructor::Missing { .. }) {
-            let missing_ctors = ConstructorSet::for_ty(pcx.cx, pcx.ty)
-                .compute_missing(pcx, matrix.heads().map(DeconstructedPat::ctor));
+        if matches!(ctor, Constructor::Wildcard) {
+            let pat = WitnessPat::wild_from_ctor(pcx, Constructor::Wildcard);
+            self.push_pattern(&pat);
+        } else if matches!(ctor, Constructor::Missing) {
             // We got the special `Missing` constructor, so each of the missing constructors gives a
             // new pattern that is not caught by the match. We list those patterns and push them
             // onto our current witnesses.
@@ -790,6 +833,12 @@ impl<'tcx> WitnessMatrix<'tcx> {
                     self.extend(witnesses_with_missing_ctor)
                 }
             }
+        } else if !missing_ctors.is_empty() {
+            // `ctor` isn't `Wildcard` or `Missing` and some ctors are missing, so we know
+            // `split_ctors` will contain `Wildcard` or `Missing`.
+            // For diagnostic purposes we choose to discard witnesses we got under `ctor`, which
+            // will let only the `Wildcard` or `Missing` be reported.
+            self.0.clear();
         } else {
             for witness in self.0.iter_mut() {
                 witness.apply_constructor(pcx, ctor)
@@ -803,101 +852,95 @@ impl<'tcx> WitnessMatrix<'tcx> {
     }
 }
 
-/// Algorithm from <http://moscova.inria.fr/~maranget/papers/warn/index.html>.
-/// The algorithm from the paper has been modified to correctly handle empty
-/// types. The changes are:
-///   (0) We don't exit early if the pattern matrix has zero rows. We just
-///       continue to recurse over columns.
-///   (1) all_constructors will only return constructors that are statically
-///       possible. E.g., it will only return `Ok` for `Result<T, !>`.
+/// This computes witnesses of the non-exhaustiveness of `matrix` (if any). We track usefulness of
+/// each row in the matrix (in `row.is_useful`). We track reachability of each subpattern
+/// using interior mutability in `DeconstructedPat`.
 ///
-/// This finds whether a (row) vector `v` of patterns is 'useful' in relation
-/// to a set of such vectors `m` - this is defined as there being a set of
-/// inputs that will match `v` but not any of the sets in `m`.
+/// The key steps are:
+/// - specialization, where we dig into the rows that have a specific constructor and call ourselves
+///     recursively;
+/// - unspecialization, where we lift the results from the previous step into results for this step
+///     (using `apply_constructor` and by updating `is_useful` for each parent row).
+/// This is all explained at the top of the file.
 ///
-/// All the patterns at each column of the `matrix ++ v` matrix must have the same type.
-///
-/// This is used both for reachability checking (if a pattern isn't useful in
-/// relation to preceding patterns, it is not reachable) and exhaustiveness
-/// checking (if a wildcard pattern is useful in relation to a matrix, the
-/// matrix isn't exhaustive).
-///
-/// `is_under_guard` is used to inform if the pattern has a guard. If it
-/// has one it must not be inserted into the matrix. This shouldn't be
-/// relied on for soundness.
-#[instrument(level = "debug", skip(cx, matrix, lint_root), ret)]
-fn is_useful<'p, 'tcx>(
+/// `wildcard_row` is a fictitious matrix row that has only wildcards, with the appropriate types to
+/// match what's in the columns of `matrix`.
+#[instrument(level = "debug", skip(cx, is_top_level), ret)]
+fn compute_usefulness<'p, 'tcx>(
     cx: &MatchCheckCtxt<'p, 'tcx>,
-    matrix: &Matrix<'p, 'tcx>,
-    v: &PatStack<'p, 'tcx>,
-    witness_preference: ArmType,
-    lint_root: HirId,
+    matrix: &mut Matrix<'p, 'tcx>,
+    wildcard_row: &PatStack<'p, 'tcx>,
     is_top_level: bool,
-) -> Usefulness<'tcx> {
-    debug!(?matrix, ?v);
-    // The base case. We are pattern-matching on () and the return value is
-    // based on whether our matrix has a row or not.
-    // NOTE: This could potentially be optimized by checking rows.is_empty()
-    // first and then, if v is non-empty, the return value is based on whether
-    // the type of the tuple we're checking is inhabited or not.
-    if v.is_empty() {
-        let ret = if matrix.rows().all(|r| r.is_under_guard) {
-            Usefulness::new_useful(witness_preference)
+) -> WitnessMatrix<'tcx> {
+    debug_assert!(matrix.rows().all(|r| r.len() == wildcard_row.len()));
+
+    if wildcard_row.is_empty() {
+        // The base case. We are morally pattern-matching on (). An arm is reachable iff it has no
+        // arms above it (and we don't count arms with guards).
+        let mut useful = true;
+        for row in matrix.rows_mut() {
+            row.is_useful = useful;
+            useful = useful && row.is_under_guard;
+            if !useful {
+                break;
+            }
+        }
+        if useful {
+            return WitnessMatrix::new_unit();
         } else {
-            Usefulness::new_not_useful(witness_preference)
+            return WitnessMatrix::new_empty();
+        }
+    }
+
+    let ty = cx.reveal_opaque_ty(wildcard_row.head().ty());
+    debug!("ty: {ty:?}");
+    let pcx = &PatCtxt { cx, ty, span: DUMMY_SP, is_top_level };
+
+    // Analyze the constructors present in this column.
+    let ctors = matrix.heads().map(|p| p.ctor());
+    let split_set = ConstructorSet::for_ty(pcx.cx, pcx.ty).split(pcx, ctors);
+    let mut split_ctors = split_set.present;
+    // We want to iterate over a full set of constructors, so if any is missing we add a wildcard.
+    if !split_set.missing.is_empty() {
+        let all_missing = split_ctors.is_empty();
+        let report_when_all_missing =
+            pcx.is_top_level && !super::deconstruct_pat::IntRange::is_integral(pcx.ty);
+        let ctor = if all_missing && !report_when_all_missing {
+            Constructor::Wildcard
+        } else {
+            // Like `Wildcard`, except if it doesn't match a row this will report all the missing
+            // constructors instead of just `_`.
+            Constructor::Missing
         };
-        debug!(?ret);
-        return ret;
+        split_ctors.push(ctor);
     }
 
-    debug_assert!(matrix.rows().all(|r| r.len() == v.len()));
+    let mut ret = WitnessMatrix::new_empty();
+    for ctor in split_ctors {
+        debug!("specialize({:?})", ctor);
+        // Dig into rows that match `ctor`.
+        let mut spec_matrix = matrix.specialize_constructor(pcx, &ctor);
+        let wildcard_row = wildcard_row.pop_head_constructor(pcx, &ctor, usize::MAX);
+        let mut witnesses = ensure_sufficient_stack(|| {
+            compute_usefulness(cx, &mut spec_matrix, &wildcard_row, false)
+        });
+        // Transform witnesses for `spec_matrix` into witnesses for `matrix`.
+        witnesses.apply_constructor(pcx, &split_set.missing, &ctor);
+        ret.extend(witnesses);
 
-    // If the first pattern is an or-pattern, expand it.
-    let mut ret = Usefulness::new_not_useful(witness_preference);
-    if v.head().is_or_pat() {
-        debug!("expanding or-pattern");
-        // We try each or-pattern branch in turn.
-        let mut matrix = matrix.clone();
-        for v in v.expand_or_pat() {
-            debug!(?v);
-            let usefulness = ensure_sufficient_stack(|| {
-                is_useful(cx, &matrix, &v, witness_preference, lint_root, false)
-            });
-            debug!(?usefulness);
-            ret.extend(usefulness);
-            // We push the already-seen patterns into the matrix in order to detect redundant
-            // branches like `Some(_) | Some(0)`.
-            matrix.push(v);
-        }
-    } else {
-        let ty = cx.reveal_opaque_ty(v.head().ty());
-        debug!("v.head: {:?}, v.span: {:?}", v.head(), v.head().span());
-        let pcx = &PatCtxt { cx, ty, span: v.head().span(), is_top_level };
-
-        let v_ctor = v.head().ctor();
-        debug!(?v_ctor);
-        // We split the head constructor of `v`.
-        let split_ctors = v_ctor.split(pcx, matrix.heads().map(DeconstructedPat::ctor));
-        // For each constructor, we compute whether there's a value that starts with it that would
-        // witness the usefulness of `v`.
-        let start_matrix = &matrix;
-        for ctor in split_ctors {
-            debug!("specialize({:?})", ctor);
-            // We cache the result of `Fields::wildcards` because it is used a lot.
-            let spec_matrix = start_matrix.specialize_constructor(pcx, &ctor);
-            let v = v.pop_head_constructor(pcx, &ctor);
-            let usefulness = ensure_sufficient_stack(|| {
-                is_useful(cx, &spec_matrix, &v, witness_preference, lint_root, false)
-            });
-            let usefulness = usefulness.apply_constructor(pcx, start_matrix, &ctor);
-            ret.extend(usefulness);
+        // A parent row is useful if any of its children is.
+        for child_row in spec_matrix.rows() {
+            let parent_row = &mut matrix.rows[child_row.parent_row];
+            parent_row.is_useful = parent_row.is_useful || child_row.is_useful;
         }
     }
 
-    if ret.is_useful() {
-        v.head().set_reachable();
+    // Map usefulness of each row onto reachability of the subpattern.
+    for row in matrix.rows() {
+        if row.is_useful {
+            row.head().set_reachable();
+        }
     }
-
     ret
 }
 
@@ -1117,14 +1160,20 @@ pub(crate) fn compute_match_usefulness<'p, 'tcx>(
     scrut_span: Span,
 ) -> UsefulnessReport<'p, 'tcx> {
     let mut matrix = Matrix::empty();
+    for (row_id, arm) in arms.iter().enumerate() {
+        let v = PatStack::from_pattern(arm.pat, row_id, arm.has_guard);
+        matrix.push(v);
+    }
+
+    let wild_pattern = cx.pattern_arena.alloc(DeconstructedPat::wildcard(scrut_ty, DUMMY_SP));
+    let wildcard_row = PatStack::from_pattern(wild_pattern, usize::MAX, false);
+    let non_exhaustiveness_witnesses = compute_usefulness(cx, &mut matrix, &wildcard_row, true);
+    let non_exhaustiveness_witnesses: Vec<_> = non_exhaustiveness_witnesses.single_column();
     let arm_usefulness: Vec<_> = arms
         .iter()
         .copied()
         .map(|arm| {
             debug!(?arm);
-            let v = PatStack::from_pattern(arm.pat, arm.has_guard);
-            is_useful(cx, &matrix, &v, RealArm, arm.hir_id, true);
-            matrix.push(v);
             let reachability = if arm.pat.is_reachable() {
                 Reachability::Reachable(arm.pat.unreachable_spans())
             } else {
@@ -1134,15 +1183,7 @@ pub(crate) fn compute_match_usefulness<'p, 'tcx>(
         })
         .collect();
 
-    let wild_pattern = cx.pattern_arena.alloc(DeconstructedPat::wildcard(scrut_ty, DUMMY_SP));
-    let v = PatStack::from_pattern(wild_pattern, false);
-    let usefulness = is_useful(cx, &matrix, &v, FakeExtraWildcard, lint_root, true);
-    let non_exhaustiveness_witnesses: Vec<_> = match usefulness {
-        WithWitnesses(witness_matrix) => witness_matrix.single_column(),
-        NoWitnesses { .. } => bug!(),
-    };
-
-    let pat_column = arms.iter().flat_map(|arm| arm.pat.flatten_or_pat()).collect::<Vec<_>>();
+    let pat_column = matrix.heads().collect::<Vec<_>>();
     lint_overlapping_range_endpoints(cx, &pat_column, lint_root);
 
     // Run the non_exhaustive_omitted_patterns lint. Only run on refutable patterns to avoid hitting
