@@ -307,8 +307,8 @@
 
 use self::ArmType::*;
 use self::Usefulness::*;
-use super::deconstruct_pat::{Constructor, ConstructorSet, DeconstructedPat, WitnessPat};
-use crate::errors::{NonExhaustiveOmittedPattern, Uncovered};
+use super::deconstruct_pat::{Constructor, ConstructorSet, DeconstructedPat, IntRange, WitnessPat};
+use crate::errors::{NonExhaustiveOmittedPattern, Overlap, OverlappingRangeEndpoints, Uncovered};
 
 use rustc_data_structures::captures::Captures;
 
@@ -317,6 +317,7 @@ use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_hir::def_id::DefId;
 use rustc_hir::HirId;
 use rustc_middle::ty::{self, Ty, TyCtxt};
+use rustc_session::lint;
 use rustc_session::lint::builtin::NON_EXHAUSTIVE_OMITTED_PATTERNS;
 use rustc_span::{Span, DUMMY_SP};
 
@@ -487,11 +488,6 @@ pub(super) struct Matrix<'p, 'tcx> {
 impl<'p, 'tcx> Matrix<'p, 'tcx> {
     fn empty() -> Self {
         Matrix { patterns: vec![] }
-    }
-
-    /// Number of columns of this matrix. `None` is the matrix is empty.
-    pub(super) fn column_count(&self) -> Option<usize> {
-        self.patterns.get(0).map(|r| r.len())
     }
 
     /// Pushes a new row to the matrix. If the row starts with an or-pattern, this recursively
@@ -878,15 +874,6 @@ fn is_useful<'p, 'tcx>(
 
         let v_ctor = v.head().ctor();
         debug!(?v_ctor);
-        if let Constructor::IntRange(ctor_range) = &v_ctor {
-            // Lint on likely incorrect range patterns (#63987)
-            ctor_range.lint_overlapping_range_endpoints(
-                pcx,
-                matrix.heads(),
-                matrix.column_count().unwrap_or(0),
-                lint_root,
-            )
-        }
         // We split the head constructor of `v`.
         let split_ctors = v_ctor.split(pcx, matrix.heads().map(DeconstructedPat::ctor));
         // For each constructor, we compute whether there's a value that starts with it that would
@@ -932,7 +919,8 @@ fn collect_nonexhaustive_missing_variants<'p, 'tcx>(
     let ty = column[0].ty();
     let pcx = &PatCtxt { cx, ty, span: DUMMY_SP, is_top_level: false };
 
-    let set = ConstructorSet::for_ty(pcx.cx, pcx.ty).split(pcx, column.iter().map(|p| p.ctor()));
+    let column_ctors = column.iter().map(|p| p.ctor());
+    let set = ConstructorSet::for_ty(pcx.cx, pcx.ty).split(pcx, column_ctors);
     if set.present.is_empty() {
         // We can't consistently handle the case where no constructors are present (since this would
         // require digging deep through any type in case there's a non_exhaustive enum somewhere),
@@ -992,6 +980,102 @@ fn collect_nonexhaustive_missing_variants<'p, 'tcx>(
         }
     }
     witnesses
+}
+
+/// Traverse the patterns to warn the user about ranges that overlap on their endpoints.
+/// This traverses patterns column-by-column, where a column is the intuitive notion of "subpatterns
+/// that inspect the same subvalue". Despite similarities with `is_useful`, this traversal is
+/// different. Notably this is linear in the depth of patterns, whereas `is_useful` is worst-case
+/// exponential (exhaustiveness is NP-complete).
+fn lint_overlapping_range_endpoints<'p, 'tcx>(
+    cx: &MatchCheckCtxt<'p, 'tcx>,
+    column: &[&DeconstructedPat<'p, 'tcx>],
+    lint_root: HirId,
+) {
+    if column.is_empty() {
+        return;
+    }
+    let ty = column[0].ty();
+    let pcx = &PatCtxt { cx, ty, span: DUMMY_SP, is_top_level: false };
+
+    let column_ctors = column.iter().map(|p| p.ctor());
+    let set = ConstructorSet::for_ty(pcx.cx, pcx.ty).split(pcx, column_ctors);
+
+    if IntRange::is_integral(ty) {
+        // If two ranges overlapped, the split set will contain their intersection as a singleton.
+        let split_int_ranges = set.present.iter().filter_map(|c| c.as_int_range());
+        for overlap_range in split_int_ranges.clone() {
+            if overlap_range.is_singleton() {
+                let overlap: u128 = overlap_range.boundaries().0;
+                // Spans of ranges that start or end with the overlap.
+                let mut prefixes: SmallVec<[_; 1]> = Default::default();
+                let mut suffixes: SmallVec<[_; 1]> = Default::default();
+                // Iterate on patterns that contained `overlap`.
+                for pat in column {
+                    let this_span = pat.span();
+                    let Constructor::IntRange(this_range) = pat.ctor() else { continue };
+                    if this_range.is_singleton() {
+                        // Don't lint when one of the ranges is a singleton.
+                        continue;
+                    }
+                    let mut this_overlaps: SmallVec<[_; 1]> = Default::default();
+                    let (start, end) = this_range.boundaries();
+                    if start == overlap {
+                        if !prefixes.is_empty() {
+                            this_overlaps = prefixes.clone();
+                        }
+                        suffixes.push(this_span)
+                    } else if end == overlap {
+                        if !suffixes.is_empty() {
+                            this_overlaps = suffixes.clone();
+                        }
+                        prefixes.push(this_span)
+                    }
+                    if !this_overlaps.is_empty() {
+                        let overlap_as_pat = overlap_range.to_pat(pcx.cx.tcx, pcx.ty);
+                        let overlaps: Vec<_> = this_overlaps
+                            .into_iter()
+                            .map(|span| Overlap { range: overlap_as_pat.clone(), span })
+                            .collect();
+                        pcx.cx.tcx.emit_spanned_lint(
+                            lint::builtin::OVERLAPPING_RANGE_ENDPOINTS,
+                            lint_root,
+                            this_span,
+                            OverlappingRangeEndpoints { overlap: overlaps, range: this_span },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Recurse into the fields.
+    for ctor in set.present {
+        let arity = ctor.arity(pcx);
+        if arity == 0 {
+            continue;
+        }
+
+        // We specialize the column by `ctor`. This gives us `arity`-many columns of patterns. These
+        // columns may have different lengths in the presence of or-patterns (this is why we can't
+        // reuse `Matrix`).
+        let mut specialized_columns: Vec<Vec<_>> = (0..arity).map(|_| Vec::new()).collect();
+        let relevant_patterns = column.iter().filter(|pat| ctor.is_covered_by(pcx, pat.ctor()));
+        for pat in relevant_patterns {
+            let specialized = pat.specialize(pcx, &ctor);
+            for (subpat, sub_column) in specialized.iter().zip(&mut specialized_columns) {
+                if subpat.is_or_pat() {
+                    sub_column.extend(subpat.iter_fields())
+                } else {
+                    sub_column.push(subpat)
+                }
+            }
+        }
+
+        for col in specialized_columns.iter() {
+            lint_overlapping_range_endpoints(cx, col.as_slice(), lint_root);
+        }
+    }
 }
 
 /// The arm of a match expression.
@@ -1064,6 +1148,9 @@ pub(crate) fn compute_match_usefulness<'p, 'tcx>(
         NoWitnesses { .. } => bug!(),
     };
 
+    let pat_column = arms.iter().flat_map(|arm| arm.pat.flatten_or_pat()).collect::<Vec<_>>();
+    lint_overlapping_range_endpoints(cx, &pat_column, lint_root);
+
     // Run the non_exhaustive_omitted_patterns lint. Only run on refutable patterns to avoid hitting
     // `if let`s. Only run if the match is exhaustive otherwise the error is redundant.
     if cx.refutable
@@ -1073,9 +1160,7 @@ pub(crate) fn compute_match_usefulness<'p, 'tcx>(
             rustc_session::lint::Level::Allow
         )
     {
-        let pat_column = arms.iter().flat_map(|arm| arm.pat.flatten_or_pat()).collect::<Vec<_>>();
         let witnesses = collect_nonexhaustive_missing_variants(cx, &pat_column);
-
         if !witnesses.is_empty() {
             // Report that a match of a `non_exhaustive` enum marked with `non_exhaustive_omitted_patterns`
             // is not exhaustive enough.
