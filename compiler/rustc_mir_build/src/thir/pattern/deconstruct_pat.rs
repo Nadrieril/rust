@@ -793,6 +793,7 @@ pub(super) enum ConstructorSet {
     Variants {
         visible_variants: Vec<VariantIdx>,
         hidden_variants: Vec<VariantIdx>,
+        empty_variants: Vec<VariantIdx>,
         non_exhaustive: bool,
     },
     /// The type is spanned by integer values. The range or ranges give the set of allowed values.
@@ -817,16 +818,18 @@ pub(super) enum ConstructorSet {
 /// `present` is morally the set of constructors present in the column, and `missing` is the set of
 /// constructors that exist in the type but are not present in the column.
 ///
-/// More formally, they respect the following constraints:
+/// More formally, if we discard wildcards from the column, they respect the following constraints:
 /// - the union of `present` and `missing` covers the whole type
-/// - `present` and `missing` are disjoint
-/// - neither contains wildcards
-/// - each constructor in `present` is covered by some non-wildcard constructor in the column
-/// - together, the constructors in `present` cover all the non-wildcard constructor in the column
-/// - non-wildcards in the column do no cover anything in `missing`
+/// - each constructor in `present` is covered by something in the column
+/// - no constructor in `missing` is covered by anything in the column
+/// - each constructor in the column is equal to the union of one or more constructors in `present`
 /// - constructors in `present` and `missing` are split for the column; in other words, they are
-///     either fully included in or disjoint from each constructor in the column. This avoids
-///     non-trivial intersections like between `0..10` and `5..15`.
+///     either fully included in or disjoint from each constructor in the column. In other words,
+///     there are no non-trivial intersections like between `0..10` and `5..15`.
+///
+/// When the `exhaustive_patterns` feature is enabled, all ctors in `missing` must match at least
+/// one value of the corresponding type. E.g. if the type is `Option<!>`, `missing` will never
+/// contain `Some`. This restriction does not apply to `present`.
 #[derive(Debug)]
 pub(super) struct SplitConstructorSet<'tcx> {
     pub(super) present: SmallVec<[Constructor<'tcx>; 1]>,
@@ -840,12 +843,6 @@ impl ConstructorSet {
             |start, end| IntRange::from_range(cx.tcx, start, end, ty, RangeEnd::Included);
         // This determines the set of all possible constructors for the type `ty`. For numbers,
         // arrays and slices we use ranges and variable-length slices when appropriate.
-        //
-        // If the `exhaustive_patterns` feature is enabled, we make sure to omit constructors that
-        // are statically impossible. E.g., for `Option<!>`, we do not include `Some(_)` in the
-        // returned list of constructors.
-        // Invariant: this is `Uninhabited` if and only if the type is uninhabited (as determined by
-        // `cx.is_uninhabited()`).
         match ty.kind() {
             ty::Bool => {
                 Self::Integers { range_1: make_range(0, 1), range_2: None, non_exhaustive: false }
@@ -894,56 +891,42 @@ impl ConstructorSet {
                 }
             }
             ty::Adt(def, args) if def.is_enum() => {
-                // If the enum is declared as `#[non_exhaustive]`, we treat it as if it had an
-                // additional "unknown" constructor.
-                // There is no point in enumerating all possible variants, because the user can't
-                // actually match against them all themselves. So we always return only the fictitious
-                // constructor.
-                // E.g., in an example like:
-                //
-                // ```
-                //     let err: io::ErrorKind = ...;
-                //     match err {
-                //         io::ErrorKind::NotFound => {},
-                //     }
-                // ```
-                //
-                // we don't want to show every possible IO error, but instead have only `_` as the
-                // witness.
                 let is_declared_nonexhaustive = cx.is_foreign_non_exhaustive_enum(ty);
-
                 if def.variants().is_empty() && !is_declared_nonexhaustive {
                     Self::Uninhabited
                 } else {
                     let is_exhaustive_pat_feature = cx.tcx.features().exhaustive_patterns;
-                    let (hidden_variants, visible_variants) = def
-                        .variants()
-                        .iter_enumerated()
-                        .filter(|(_, v)| {
-                            // If `exhaustive_patterns` is enabled, we exclude variants known to be
-                            // uninhabited.
-                            !is_exhaustive_pat_feature
-                                || v.inhabited_predicate(cx.tcx, *def)
-                                    .instantiate(cx.tcx, args)
-                                    .apply(cx.tcx, cx.param_env, cx.module)
-                        })
-                        .map(|(idx, _)| idx)
-                        .partition(|idx| {
-                            let variant_def_id = def.variant(*idx).def_id;
-                            // Filter variants that depend on a disabled unstable feature.
-                            let is_unstable = matches!(
-                                cx.tcx.eval_stability(variant_def_id, None, DUMMY_SP, None),
-                                EvalResult::Deny { .. }
-                            );
-                            // Filter foreign `#[doc(hidden)]` variants.
-                            let is_doc_hidden =
-                                cx.tcx.is_doc_hidden(variant_def_id) && !variant_def_id.is_local();
-                            is_unstable || is_doc_hidden
-                        });
+                    let mut visible_variants = Vec::new();
+                    let mut hidden_variants = Vec::new();
+                    let mut empty_variants = Vec::new();
+                    for (idx, v) in def.variants().iter_enumerated() {
+                        let variant_def_id = def.variant(idx).def_id;
+                        // Visibly uninhabited variants.
+                        let is_inhabited = v
+                            .inhabited_predicate(cx.tcx, *def)
+                            .instantiate(cx.tcx, args)
+                            .apply(cx.tcx, cx.param_env, cx.module);
+                        // Variants that depend on a disabled unstable feature.
+                        let is_unstable = matches!(
+                            cx.tcx.eval_stability(variant_def_id, None, DUMMY_SP, None),
+                            EvalResult::Deny { .. }
+                        );
+                        // Foreign `#[doc(hidden)]` variants.
+                        let is_doc_hidden =
+                            cx.tcx.is_doc_hidden(variant_def_id) && !variant_def_id.is_local();
+                        if is_exhaustive_pat_feature && !is_inhabited {
+                            empty_variants.push(idx);
+                        } else if is_unstable || is_doc_hidden {
+                            hidden_variants.push(idx);
+                        } else {
+                            visible_variants.push(idx);
+                        }
+                    }
 
                     Self::Variants {
                         visible_variants,
                         hidden_variants,
+                        empty_variants,
                         non_exhaustive: is_declared_nonexhaustive,
                     }
                 }
@@ -980,7 +963,12 @@ impl ConstructorSet {
                     present.push(Single);
                 }
             }
-            ConstructorSet::Variants { visible_variants, hidden_variants, non_exhaustive } => {
+            ConstructorSet::Variants {
+                visible_variants,
+                hidden_variants,
+                empty_variants,
+                non_exhaustive,
+            } => {
                 let seen_set: FxHashSet<_> = seen.map(|c| c.as_variant().unwrap()).collect();
                 let mut skipped_a_hidden_variant = false;
 
@@ -992,7 +980,6 @@ impl ConstructorSet {
                         missing.push(ctor);
                     }
                 }
-
                 for variant in hidden_variants {
                     let ctor = Variant(*variant);
                     if seen_set.contains(&variant) {
@@ -1001,6 +988,13 @@ impl ConstructorSet {
                         skipped_a_hidden_variant = true;
                     }
                 }
+                for variant in empty_variants {
+                    let ctor = Variant(*variant);
+                    if seen_set.contains(&variant) {
+                        present.push(ctor);
+                    }
+                }
+
                 if skipped_a_hidden_variant {
                     missing.push(Hidden);
                 }
