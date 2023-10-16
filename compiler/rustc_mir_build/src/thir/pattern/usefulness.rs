@@ -325,6 +325,7 @@ use std::fmt;
 
 pub(crate) struct MatchCheckCtxt<'p, 'tcx> {
     pub(crate) tcx: TyCtxt<'tcx>,
+    pub(crate) typeck_results: &'tcx ty::TypeckResults<'tcx>,
     /// The module in which the match occurs. This is necessary for
     /// checking inhabited-ness of types because whether a type is (visibly)
     /// inhabited can depend on whether it was defined in the current module or
@@ -354,6 +355,21 @@ impl<'a, 'tcx> MatchCheckCtxt<'a, 'tcx> {
             }
             _ => false,
         }
+    }
+
+    /// Type inference occasionally gives us opaque types in places where corresponding patterns
+    /// have more specific types. To avoid inconsistencies, we use the corresponding concrete type
+    /// if possible.
+    fn reveal_opaque_ty(&self, ty: Ty<'tcx>) -> Ty<'tcx> {
+        if let ty::Alias(ty::Opaque, alias_ty) = ty.kind() {
+            if let Some(local_def_id) = alias_ty.def_id.as_local() {
+                let key = ty::OpaqueTypeKey { def_id: local_def_id, args: alias_ty.args };
+                if let Some(hidden_ty) = self.typeck_results.concrete_opaque_types.get(&key) {
+                    return hidden_ty.ty;
+                }
+            }
+        }
+        ty
     }
 }
 
@@ -819,15 +835,7 @@ fn is_useful<'p, 'tcx>(
             }
         }
     } else {
-        let mut ty = v.head().ty();
-
-        // Opaque types can't get destructured/split, but the patterns can
-        // actually hint at hidden types, so we use the patterns' types instead.
-        if let ty::Alias(ty::Opaque, ..) = ty.kind() {
-            if let Some(row) = rows.first() {
-                ty = row.head().ty();
-            }
-        }
+        let ty = cx.reveal_opaque_ty(v.head().ty());
         debug!("v.head: {:?}, v.span: {:?}", v.head(), v.head().span());
         let pcx = &PatCtxt { cx, ty, span: v.head().span(), is_top_level };
 
