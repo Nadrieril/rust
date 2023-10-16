@@ -92,6 +92,25 @@ fn never(x: !) {
     }
 }
 
+fn nested_never(x: Result<!, !>) {
+    match x {} // ok
+    //[normal]~^ ERROR `Ok(_)` and `Err(_)` not covered
+    //[normal]~| NOTE not covered
+    //[normal]~| NOTE the matched value is of type
+    //[normal]~| NOTE defined here
+    match x {
+        _ => {}, //[exhaustive_patterns]~ ERROR unreachable pattern
+    }
+    match x {
+    //[normal]~^ ERROR `Ok(_)` and `Err(_)` not covered
+    //[normal]~| NOTE not covered
+    //[normal]~| NOTE the matched value is of type
+    //[normal]~| NOTE defined here
+    //[normal]~| NOTE match arms with guards don't count towards exhaustivity
+        _ if false => {}, //[exhaustive_patterns]~ ERROR unreachable pattern
+    }
+}
+
 macro_rules! match_no_arms {
     ($e:expr) => {
         match $e {}
