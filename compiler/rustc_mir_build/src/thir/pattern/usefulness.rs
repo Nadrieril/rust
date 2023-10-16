@@ -912,11 +912,12 @@ fn is_useful<'p, 'tcx>(
 /// notion of "subpatterns that inspect the same subvalue".
 /// Despite similarities with `is_useful`, this traversal is different. Notably this is linear in the
 /// depth of patterns, whereas `is_useful` is worst-case exponential (exhaustiveness is NP-complete).
+#[instrument(level = "debug", skip(cx), ret)]
 fn collect_nonexhaustive_missing_variants<'p, 'tcx>(
     cx: &MatchCheckCtxt<'p, 'tcx>,
     column: &[&DeconstructedPat<'p, 'tcx>],
 ) -> Vec<WitnessPat<'tcx>> {
-    let ty = column[0].ty();
+    let ty = cx.reveal_opaque_ty(column[0].ty());
     let pcx = &PatCtxt { cx, ty, span: DUMMY_SP, is_top_level: false };
 
     let column_ctors = column.iter().map(|p| p.ctor());
@@ -987,6 +988,7 @@ fn collect_nonexhaustive_missing_variants<'p, 'tcx>(
 /// that inspect the same subvalue". Despite similarities with `is_useful`, this traversal is
 /// different. Notably this is linear in the depth of patterns, whereas `is_useful` is worst-case
 /// exponential (exhaustiveness is NP-complete).
+#[instrument(level = "debug", skip(cx, lint_root))]
 fn lint_overlapping_range_endpoints<'p, 'tcx>(
     cx: &MatchCheckCtxt<'p, 'tcx>,
     column: &[&DeconstructedPat<'p, 'tcx>],
@@ -995,7 +997,7 @@ fn lint_overlapping_range_endpoints<'p, 'tcx>(
     if column.is_empty() {
         return;
     }
-    let ty = column[0].ty();
+    let ty = cx.reveal_opaque_ty(column[0].ty());
     let pcx = &PatCtxt { cx, ty, span: DUMMY_SP, is_top_level: false };
 
     let column_ctors = column.iter().map(|p| p.ctor());
