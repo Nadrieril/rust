@@ -20,7 +20,7 @@
 //! The algorithm implemented here is a modified version of the one described in [this
 //! paper](http://moscova.inria.fr/~maranget/papers/warn/index.html). We have however generalized it
 //! to accommodate the variety of patterns that Rust supports. We thus explain our version here,
-//! without being as rigorous.
+//! without being as precise.
 //!
 //!
 //! # Summary
@@ -29,7 +29,7 @@
 //! following:
 //! - a (hopefully empty) set of values that match none of the patterns,
 //! - for each subpattern (taking into account or-patterns), whether it's matched by any value that
-//!     isn't caught by a pattern before it.
+//!     isn't caught by a pattern before it, i.e. whether it is reachable.
 //!
 //! To a first approximation, the algorithm works by trying all possible values for the type being
 //! matched on, and determining which arm(s) match which value. To make this tractable we cleverly
@@ -38,170 +38,26 @@
 //! The entrypoint of this file is the [`compute_match_usefulness`] function, which computes
 //! reachability for each subpattern and exhaustiveness for the whole match.
 //!
-//!
-//! # Example
-//!
-//! A picture is worth a thousand words. Let's watch the algorithm run before we dig into concepts.
-//!
-//! ```rust,ignore(example)
-//! match x {
-//!     Pair(Some(0), _) => 1,
-//!     Pair(_, false) => 2,
-//!     Pair(Some(0), false) => 3,
-//! }
-//! ```
-//!
-//! We start:
-//!  ┐ Patterns:
-//!  │   1. `[Pair(Some(0), _)]`
-//!  │   2. `[Pair(_, false)]`
-//!  │   3. `[Pair(Some(0), false)]`
-//!  │
-//!  │ Dig into `Pair`:
-//!  ├─┐ Patterns:
-//!  │ │   1. `[Some(0), _]`
-//!  │ │   2. `[_, false]`
-//!  │ │   3. `[Some(0), false]`
-//!  │ │
-//!  │ │ Dig into `Some`:
-//!  │ ├─┐ Patterns:
-//!  │ │ │   1. `[0, _]`
-//!  │ │ │   2. `[_, false]`
-//!  │ │ │   3. `[0, false]`
-//!  │ │ │
-//!  │ │ │ Dig into `0`:
-//!  │ │ ├─┐ Patterns:
-//!  │ │ │ │   1. `[_]`
-//!  │ │ │ │   3. `[false]`
-//!  │ │ │ │
-//!  │ │ │ │ Dig into `true`:
-//!  │ │ │ ├─┐ Patterns:
-//!  │ │ │ │ │   1. `[]`
-//!  │ │ │ │ │
-//!  │ │ │ │ │ We note arm 1 is reachable (by `Pair(Some(0), true)`).
-//!  │ │ │ ├─┘
-//!  │ │ │ │
-//!  │ │ │ │ Dig into `false`:
-//!  │ │ │ ├─┐ Patterns:
-//!  │ │ │ │ │   1. `[]`
-//!  │ │ │ │ │   3. `[]`
-//!  │ │ │ │ │
-//!  │ │ │ │ │ We note arm 1 is reachable (by `Pair(Some(0), false)`).
-//!  │ │ │ ├─┘
-//!  │ │ ├─┘
-//!  │ │ │
-//!  │ │ │ Dig into `1..`:
-//!  │ │ ├─┐ Patterns:
-//!  │ │ │ │   2. `[false]`
-//!  │ │ │ │
-//!  │ │ │ │ Dig into `true`:
-//!  │ │ │ ├─┐ Patterns:
-//!  │ │ │ │ │   // no rows left
-//!  │ │ │ │ │
-//!  │ │ │ │ │ We have found an unmatched value! This gives us a witness.
-//!  │ │ │ │ │ New witnesses:
-//!  │ │ │ │ │   `[]`
-//!  │ │ │ ├─┘
-//!  │ │ │ │ New witnesses from `true`:
-//!  │ │ │ │   `[true]`
-//!  │ │ │ │
-//!  │ │ │ │ Dig into `false`:
-//!  │ │ │ ├─┐ Patterns:
-//!  │ │ │ │ │   2. `[]`
-//!  │ │ │ │ │
-//!  │ │ │ │ │ We note arm 2 is reachable (by `Pair(Some(1..), false)`).
-//!  │ │ │ ├─┘
-//!  │ │ │ │
-//!  │ │ │ │ Total witnesses for `1..`:
-//!  │ │ │ │   `[true]`
-//!  │ │ ├─┘
-//!  │ │ │ New witnesses from `1..`:
-//!  │ │ │   `[1.., true]`
-//!  │ │ │
-//!  │ │ │ Total witnesses for `Some`:
-//!  │ │ │   `[1.., true]`
-//!  │ ├─┘
-//!  │ │ New witnesses from `Some`:
-//!  │ │   `[Some(1..), true]`
-//!  │ │
-//!  │ │ Dig into `None`:
-//!  │ ├─┐ Patterns:
-//!  │ │ │   2. `[false]`
-//!  │ │ │
-//!  │ │ │ Dig into `true`:
-//!  │ │ ├─┐ Patterns:
-//!  │ │ │ │   // no rows left
-//!  │ │ │ │
-//!  │ │ │ │ We have found an unmatched value! This gives us a witness.
-//!  │ │ │ │ New witnesses:
-//!  │ │ │ │   `[]`
-//!  │ │ ├─┘
-//!  │ │ │ New witnesses from `true`:
-//!  │ │ │   `[true]`
-//!  │ │ │
-//!  │ │ │ Dig into `false`:
-//!  │ │ ├─┐ Patterns:
-//!  │ │ │ │   2. `[]`
-//!  │ │ │ │
-//!  │ │ │ │ We note arm 2 is reachable (by `Pair(None, false)`).
-//!  │ │ ├─┘
-//!  │ │ │
-//!  │ │ │ Total witnesses for `None`:
-//!  │ │ │   `[true]`
-//!  │ ├─┘
-//!  │ │ New witnesses from `None`:
-//!  │ │   `[None, true]`
-//!  │ │
-//!  │ │ Total witnesses for `Pair`:
-//!  │ │   `[Some(1..), true]`
-//!  │ │   `[None, true]`
-//!  ├─┘
-//!  │ New witnesses from `Pair`:
-//!  │   `[Pair(Some(1..), true)]`
-//!  │   `[Pair(None, true)]`
-//!  │
-//!  │ Final witnesses:
-//!  │   `[Pair(Some(1..), true)]`
-//!  │   `[Pair(None, true)]`
-//!  ┘
-//!
-//! We conclude:
-//! - Arm 3 is unreachable (it was never marked as reachable);
-//! - The match is not exhaustive;
-//! - Adding `Pair(Some(1..), true)` and `Pair(None, true)` would make the match exhaustive.
-//!
-//! Note how we unpeel values layer by layer. This is the topic of the next section.
+//! In this page we explain the necessary concepts to understand how the algorithm works.
 //!
 //!
 //! # Constructors and fields
 //!
-//! Note: we will often abbreviate "constructor" as "ctor".
+//! In the value `Pair(Some(0), true)`, `Pair` is called the constructor of the value, and `Some(0)`
+//! and `true` are its fields. Every matcheable value can be decomposed in this way. Examples of
+//! constructors are: `Some`, `None`, `(,)` (the 2-tuple constructor), `Foo {..}` (the constructor
+//! for a struct `Foo`), and `2` (the constructor for the number `2`).
 //!
-//! The idea that powers everything that is done in this file is the following: a (matchable) value
-//! is made from a constructor applied to a number of subvalues. Examples of constructors are
-//! `Some`, `None`, `(,)` (the 2-tuple constructor), `Foo {..}` (the constructor for a struct
-//! `Foo`), and `2` (the constructor for the number `2`). This is natural when we think of
-//! pattern-matching, and this is the basis for what follows.
+//! Each constructor takes a fixed number of fields; this is called its arity. `Pair` and `(,)`
+//! have arity 2, `Some` has arity 1, `None` and `42` have arity 0. Each type has a known set of
+//! constructors. Some have many (like `u64`) or even an infinity (like `&str` or `&[]`).
 //!
-//! Some of the ctors listed above might feel weird: `None` and `2` don't take any arguments. That's
-//! ok: those are ctors that take a list of 0 arguments; they are the simplest case of ctors. We
-//! treat `2` as a ctor because `u64` and other number types behave exactly like a huge `enum`, with
-//! one variant for each number. This allows us to see any matchable value as made up from a tree of
-//! ctors, each having a set number of children. For example: `Foo { bar: None, baz: Ok(0) }` is
-//! made from 4 different ctors, namely `Foo{..}`, `None`, `Ok` and `0`.
+//! Patterns are similar: `Pair(Some(_), _)` has constructor `Pair` and two fields. The difference
+//! is that we get some extra pattern-only constructors, namely: the wildcard `_`, integer ranges
+//! like `0..=10`, and variable-length slices like `[_, ..]`.
 //!
-//! This idea can be extended to patterns: they are also made from constructors applied to fields. A
-//! pattern for a given type is allowed to use all the ctors for values of that type (which we call
-//! "value constructors"), but there are also pattern-only ctors. The most important one is the
-//! wildcard (`_`), and the others are integer ranges (`0..=10`), variable-length slices (`[x,
-//! ..]`), and or-patterns (`Ok(0) | Err(_)`). Examples of valid patterns are `42`, `Some(_)`, `Foo
-//! { bar: Some(0) | None, baz: _ }`. Note that a binder in a pattern (e.g. `Some(x)`) matches the
-//! same values as a wildcard (e.g. `Some(_)`), so we treat both as wildcards.
-//!
-//! From this deconstruction we can compute whether a given value matches a given pattern; we simply
-//! look at ctors one at a time. Given a pattern `p` and a value `v`, we want to compute
-//! `matches!(v, p)`. It's mostly straightforward: we compare the head ctors and when they match we
-//! compare their fields recursively. A few representative examples:
+//! Now to check if a value `v` matches a pattern `p`, we check if `v`'s constructor matches `p`'s
+//! constructor, then recursively compare their fields if necessary. A few representative examples:
 //!
 //! - `matches!(v, _) := true`
 //! - `matches!((v0,  v1), (p0,  p1)) := matches!(v0, p0) && matches!(v1, p1)`
@@ -213,18 +69,86 @@
 //! - `matches!([v0, v1, v2], [p0, .., p1]) := matches!(v0, p0) && matches!(v2, p1)`
 //! - `matches!(v, p0 | p1) := matches!(v, p0) || matches!(v, p1)`
 //!
-//! Constructors, fields and relevant operations are defined in the [`super::deconstruct_pat`] module.
+//! Constructors, fields and relevant operations are defined in the [`super::deconstruct_pat`]
+//! module. The question of whether a constructor is matched by another one is answered by
+//! [`Constructor::is_covered_by`].
 //!
-//! Note: this constructors/fields distinction does not straightforwardly apply to every Rust type.
-//! For example a value of type `Rc<u64>` can't be deconstructed that way, and `&str` has an
-//! infinitude of constructors. There are also subtleties with visibility of fields and
-//! uninhabitedness and various other things. The constructors idea can be extended to handle most
-//! of these subtleties though; caveats are documented where relevant throughout the code.
-//!
-//! Whether constructors cover each other is computed by [`Constructor::is_covered_by`].
+//! Note 1: or-patterns are slightly different, we treat them separately.
+//! Note 2: variables (like in `Some(x)`) match anything, so we treat them as wildcards.
+//! Note 3: this only applies to matcheable values. For example a value of type `Rc<u64>` can't be
+//! deconstructed that way.
 //!
 //!
 //! # Specialization
+//!
+//! Recall that we need to try all possible values to see if the match is exhaustive. We do it
+//! constructor-by-constructor, e.g. for the type `Option<T>`, "these patterns match all values" is
+//! equivalent to "these patterns match all values with constructor `Some` as well as all values
+//! with constructor `None`".
+//!
+//! Now observe that "the following matches all values that look like `(Some(_), _)`"
+//! ```rust,ignore(example)
+//! match x {
+//!     (Some(0), _) => 1,
+//!     (_, false) => 2,
+//!     (Some(0), false) => 3,
+//! }
+//! ```
+//!
+//! is equivalent to "the following matches all values"
+//! ```rust,ignore(example)
+//! match x {
+//!     (0, _) => 1,
+//!     (_, false) => 2,
+//!     (0, false) => 3,
+//! }
+//! ```
+//!
+//! and "the following matches all values that look like `(None, _)`"
+//! ```rust,ignore(example)
+//! match x {
+//!     (Some(0), _) => 1,
+//!     (_, false) => 2,
+//!     (Some(0), false) => 3,
+//! }
+//! ```
+//!
+//! is equivalent to "the following matches all values"
+//! ```rust,ignore(example)
+//! match x {
+//!     false => 2,
+//! }
+//! ```
+//!
+//! In other words, this is exhaustive:
+//! ```rust,ignore(example)
+//! match x {
+//!     (Some(0), _) => 1,
+//!     (_, false) => 2,
+//!     (Some(0), false) => 3,
+//! }
+//! ```
+//!
+//! if and only if these two are exhaustive:
+//! ```rust,ignore(example)
+//! match x {
+//!     (0, _) => 1,
+//!     (_, false) => 2,
+//!     (0, false) => 3,
+//! }
+//! match x {
+//!     false => 2,
+//! }
+//! ```
+//!
+//! This is how the algorithm works: we recursively peel off one constructor at a time until we have
+//! tried them all. This "peeling off" step is called "specialization".
+//!
+//! TODO: we operate on rows
+//! TODO: define and illustrate specialize
+//! TODO: unspecialization to reconstruct witnesses
+//!
+//! Note: we will sometimes abbreviate "constructor" as "ctor".
 //!
 //! Recall that we wish to compute `usefulness(p_1 .. p_n, q)`: given a list of patterns `p_1 ..
 //! p_n` and a pattern `q`, all of the same type, we want to find a list of values (called
@@ -415,6 +339,138 @@
 //! In order to honor the `==` implementation, constants of types that implement `PartialEq` manually
 //! stay as a full constant and become an `Opaque` pattern. These `Opaque` patterns do not participate
 //! in exhaustiveness, specialization or overlap checking.
+//!
+//!
+//! # Example
+//!
+//! A picture is worth a thousand words.
+//!
+//! ```rust,ignore(example)
+//! match x {
+//!     Pair(Some(0), _) => 1,
+//!     Pair(_, false) => 2,
+//!     Pair(Some(0), false) => 3,
+//! }
+//! ```
+//!
+//! We start:
+//!  ┐ Patterns:
+//!  │   1. `[Pair(Some(0), _)]`
+//!  │   2. `[Pair(_, false)]`
+//!  │   3. `[Pair(Some(0), false)]`
+//!  │
+//!  │ Dig into `Pair`:
+//!  ├─┐ Patterns:
+//!  │ │   1. `[Some(0), _]`
+//!  │ │   2. `[_, false]`
+//!  │ │   3. `[Some(0), false]`
+//!  │ │
+//!  │ │ Dig into `Some`:
+//!  │ ├─┐ Patterns:
+//!  │ │ │   1. `[0, _]`
+//!  │ │ │   2. `[_, false]`
+//!  │ │ │   3. `[0, false]`
+//!  │ │ │
+//!  │ │ │ Dig into `0`:
+//!  │ │ ├─┐ Patterns:
+//!  │ │ │ │   1. `[_]`
+//!  │ │ │ │   3. `[false]`
+//!  │ │ │ │
+//!  │ │ │ │ Dig into `true`:
+//!  │ │ │ ├─┐ Patterns:
+//!  │ │ │ │ │   1. `[]`
+//!  │ │ │ │ │
+//!  │ │ │ │ │ We note arm 1 is reachable (by `Pair(Some(0), true)`).
+//!  │ │ │ ├─┘
+//!  │ │ │ │
+//!  │ │ │ │ Dig into `false`:
+//!  │ │ │ ├─┐ Patterns:
+//!  │ │ │ │ │   1. `[]`
+//!  │ │ │ │ │   3. `[]`
+//!  │ │ │ │ │
+//!  │ │ │ │ │ We note arm 1 is reachable (by `Pair(Some(0), false)`).
+//!  │ │ │ ├─┘
+//!  │ │ ├─┘
+//!  │ │ │
+//!  │ │ │ Dig into `1..`:
+//!  │ │ ├─┐ Patterns:
+//!  │ │ │ │   2. `[false]`
+//!  │ │ │ │
+//!  │ │ │ │ Dig into `true`:
+//!  │ │ │ ├─┐ Patterns:
+//!  │ │ │ │ │   // no rows left
+//!  │ │ │ │ │
+//!  │ │ │ │ │ We have found an unmatched value! This gives us a witness.
+//!  │ │ │ │ │ New witnesses:
+//!  │ │ │ │ │   `[]`
+//!  │ │ │ ├─┘
+//!  │ │ │ │ New witnesses from `true`:
+//!  │ │ │ │   `[true]`
+//!  │ │ │ │
+//!  │ │ │ │ Dig into `false`:
+//!  │ │ │ ├─┐ Patterns:
+//!  │ │ │ │ │   2. `[]`
+//!  │ │ │ │ │
+//!  │ │ │ │ │ We note arm 2 is reachable (by `Pair(Some(1..), false)`).
+//!  │ │ │ ├─┘
+//!  │ │ │ │
+//!  │ │ │ │ Total witnesses for `1..`:
+//!  │ │ │ │   `[true]`
+//!  │ │ ├─┘
+//!  │ │ │ New witnesses from `1..`:
+//!  │ │ │   `[1.., true]`
+//!  │ │ │
+//!  │ │ │ Total witnesses for `Some`:
+//!  │ │ │   `[1.., true]`
+//!  │ ├─┘
+//!  │ │ New witnesses from `Some`:
+//!  │ │   `[Some(1..), true]`
+//!  │ │
+//!  │ │ Dig into `None`:
+//!  │ ├─┐ Patterns:
+//!  │ │ │   2. `[false]`
+//!  │ │ │
+//!  │ │ │ Dig into `true`:
+//!  │ │ ├─┐ Patterns:
+//!  │ │ │ │   // no rows left
+//!  │ │ │ │
+//!  │ │ │ │ We have found an unmatched value! This gives us a witness.
+//!  │ │ │ │ New witnesses:
+//!  │ │ │ │   `[]`
+//!  │ │ ├─┘
+//!  │ │ │ New witnesses from `true`:
+//!  │ │ │   `[true]`
+//!  │ │ │
+//!  │ │ │ Dig into `false`:
+//!  │ │ ├─┐ Patterns:
+//!  │ │ │ │   2. `[]`
+//!  │ │ │ │
+//!  │ │ │ │ We note arm 2 is reachable (by `Pair(None, false)`).
+//!  │ │ ├─┘
+//!  │ │ │
+//!  │ │ │ Total witnesses for `None`:
+//!  │ │ │   `[true]`
+//!  │ ├─┘
+//!  │ │ New witnesses from `None`:
+//!  │ │   `[None, true]`
+//!  │ │
+//!  │ │ Total witnesses for `Pair`:
+//!  │ │   `[Some(1..), true]`
+//!  │ │   `[None, true]`
+//!  ├─┘
+//!  │ New witnesses from `Pair`:
+//!  │   `[Pair(Some(1..), true)]`
+//!  │   `[Pair(None, true)]`
+//!  │
+//!  │ Final witnesses:
+//!  │   `[Pair(Some(1..), true)]`
+//!  │   `[Pair(None, true)]`
+//!  ┘
+//!
+//! We conclude:
+//! - Arm 3 is unreachable (it was never marked as reachable);
+//! - The match is not exhaustive;
+//! - Adding `Pair(Some(1..), true)` and `Pair(None, true)` would make the match exhaustive.
 
 use super::deconstruct_pat::{Constructor, ConstructorSet, DeconstructedPat, IntRange, WitnessPat};
 use crate::errors::{NonExhaustiveOmittedPattern, Overlap, OverlappingRangeEndpoints, Uncovered};
