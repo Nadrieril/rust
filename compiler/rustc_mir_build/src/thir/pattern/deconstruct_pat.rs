@@ -1108,14 +1108,6 @@ impl<'p, 'tcx> Fields<'p, 'tcx> {
         Fields { fields }
     }
 
-    fn wildcards_from_tys(
-        cx: &MatchCheckCtxt<'p, 'tcx>,
-        tys: impl IntoIterator<Item = Ty<'tcx>>,
-        span: Span,
-    ) -> Self {
-        Fields::from_iter(cx, tys.into_iter().map(|ty| DeconstructedPat::wildcard(ty, span)))
-    }
-
     // In the cases of either a `#[non_exhaustive]` field list or a non-public field, we hide
     // uninhabited fields in order not to reveal the uninhabitedness of the whole variant.
     // This lists the fields we keep along with their types.
@@ -1141,13 +1133,6 @@ impl<'p, 'tcx> Fields<'p, 'tcx> {
                 Some((FieldIdx::new(i), ty))
             }
         })
-    }
-
-    /// Creates a new list of wildcard fields for a given constructor. The result must have a
-    /// length of `constructor.arity()`.
-    #[instrument(level = "trace")]
-    pub(super) fn wildcards(pcx: &PatCtxt<'_, 'p, 'tcx>, ctor: &TypedConstructor<'tcx>) -> Self {
-        Self::wildcards_from_tys(pcx.cx, ctor.iter_field_tys(), pcx.span)
     }
 
     /// Returns the list of patterns.
@@ -1395,16 +1380,19 @@ impl<'p, 'tcx> DeconstructedPat<'p, 'tcx> {
         pcx: &PatCtxt<'_, 'p, 'tcx>,
         other_ctor: &TypedConstructor<'tcx>,
     ) -> SmallVec<[&'p DeconstructedPat<'p, 'tcx>; 2]> {
+        // Build a wildcard for each field of `other_ctor`.
+        let wildcard_fields = || -> SmallVec<[_; 2]> {
+            let fields: &[_] = pcx.cx.pattern_arena.alloc_from_iter(
+                other_ctor.iter_field_tys().map(|ty| DeconstructedPat::wildcard(ty, pcx.span)),
+            );
+            fields.iter().collect()
+        };
         match &self.ctor {
-            Wildcard => {
-                // We return a wildcard for each field of `other_ctor`.
-                Fields::wildcards(pcx, other_ctor).iter_patterns().collect()
-            }
+            Wildcard => wildcard_fields(),
             Slice(Slice { kind: VarLen(prefix, suffix), .. }) => {
                 // The only tricky case: the output slice might be larger than this one, so we
                 // carefully fill the prefix and suffix, leaving wildcards in the middle.
-                let mut ret: SmallVec<[_; 2]> =
-                    Fields::wildcards(pcx, other_ctor).iter_patterns().collect();
+                let mut ret = wildcard_fields();
                 let other_arity = ret.len();
                 let this_arity = self.fields.fields.len();
                 for i in 0..*prefix {
