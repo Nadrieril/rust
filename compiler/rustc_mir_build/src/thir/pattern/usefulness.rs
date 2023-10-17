@@ -473,7 +473,8 @@
 //! - Adding `Pair(Some(1..), true)` and `Pair(None, true)` would make the match exhaustive.
 
 use super::deconstruct_pat::{
-    Constructor, ConstructorSet, DeconstructedPat, IntRange, SplitConstructorSet, WitnessPat,
+    Constructor, ConstructorSet, DeconstructedPat, IntRange, SplitConstructorSet, TypedConstructor,
+    WitnessPat,
 };
 use crate::errors::{NonExhaustiveOmittedPattern, Overlap, OverlappingRangeEndpoints, Uncovered};
 
@@ -624,7 +625,7 @@ impl<'p, 'tcx> PatStack<'p, 'tcx> {
     fn pop_head_constructor(
         &self,
         pcx: &PatCtxt<'_, 'p, 'tcx>,
-        ctor: &Constructor<'tcx>,
+        ctor: &TypedConstructor<'tcx>,
         parent_row: usize,
     ) -> PatStack<'p, 'tcx> {
         // We pop the head pattern and push the new fields extracted from the arguments of
@@ -693,7 +694,7 @@ impl<'p, 'tcx> Matrix<'p, 'tcx> {
     fn specialize_constructor(
         &self,
         pcx: &PatCtxt<'_, 'p, 'tcx>,
-        ctor: &Constructor<'tcx>,
+        ctor: &TypedConstructor<'tcx>,
     ) -> Matrix<'p, 'tcx> {
         let mut matrix = Matrix::empty();
         for (i, row) in self.rows().enumerate() {
@@ -817,11 +818,11 @@ impl<'tcx> WitnessStack<'tcx> {
     /// ctor: Enum::Variant { a: (bool, &'static str), b: usize}
     /// pats: [(false, "foo"), _, true]
     /// result: [Enum::Variant { a: (false, "foo"), b: _ }, true]
-    fn apply_constructor(&mut self, pcx: &PatCtxt<'_, '_, 'tcx>, ctor: &Constructor<'tcx>) {
+    fn apply_constructor(&mut self, pcx: &PatCtxt<'_, '_, 'tcx>, ctor: &TypedConstructor<'tcx>) {
         let len = self.0.len();
-        let arity = ctor.arity(pcx);
+        let arity = ctor.arity();
         let fields = self.0.drain((len - arity)..).rev().collect();
-        let pat = WitnessPat::new(ctor.clone(), fields, pcx.ty);
+        let pat = WitnessPat::new(ctor.untyped().clone(), fields, pcx.ty);
         self.0.push(pat);
     }
 }
@@ -866,26 +867,26 @@ impl<'tcx> WitnessMatrix<'tcx> {
         &mut self,
         pcx: &PatCtxt<'_, '_, 'tcx>,
         missing_ctors: &[Constructor<'tcx>],
-        ctor: &Constructor<'tcx>,
+        ctor: &TypedConstructor<'tcx>,
     ) {
         if self.is_empty() {
             return;
         }
-        if matches!(ctor, Constructor::Wildcard) {
-            let pat = WitnessPat::wild_from_ctor(pcx, Constructor::Wildcard);
+        if matches!(ctor.untyped(), Constructor::Wildcard) {
+            let pat = ctor.fill_with_wildcards(pcx);
             self.push_pattern(&pat);
-        } else if matches!(ctor, Constructor::Missing) {
+        } else if matches!(ctor.untyped(), Constructor::Missing) {
             // We got the special `Missing` constructor, so each of the missing constructors gives a
             // new pattern that is not caught by the match. We list those patterns and push them
             // onto our current witnesses.
             if missing_ctors.iter().any(|c| c.is_non_exhaustive()) {
                 // We only report `_` here; listing other constructors would be redundant.
-                let pat = WitnessPat::wild_from_ctor(pcx, Constructor::NonExhaustive);
+                let pat = WitnessPat::non_exhaustive(pcx.ty);
                 self.push_pattern(&pat);
             } else {
                 let old_witnesses = std::mem::replace(self, Self::new_empty());
                 for ctor in missing_ctors {
-                    let pat = WitnessPat::wild_from_ctor(pcx, ctor.clone());
+                    let pat = ctor.clone().typed(pcx).fill_with_wildcards(pcx);
                     let mut witnesses_with_missing_ctor = old_witnesses.clone();
                     witnesses_with_missing_ctor.push_pattern(&pat);
                     self.extend(witnesses_with_missing_ctor)
@@ -977,6 +978,7 @@ fn compute_usefulness<'p, 'tcx>(
     for ctor in split_ctors {
         debug!("specialize({:?})", ctor);
         // Dig into rows that match `ctor`.
+        let ctor = ctor.typed(pcx);
         let mut spec_matrix = matrix.specialize_constructor(pcx, &ctor);
         let wildcard_row = wildcard_row.pop_head_constructor(pcx, &ctor, usize::MAX);
         let mut witnesses = ensure_sufficient_stack(|| {
@@ -1032,8 +1034,8 @@ impl<'p, 'tcx> PatternColumn<'p, 'tcx> {
         self.patterns.iter().copied()
     }
 
-    fn specialize(&self, pcx: &PatCtxt<'_, 'p, 'tcx>, ctor: &Constructor<'tcx>) -> Vec<Self> {
-        let arity = ctor.arity(pcx);
+    fn specialize(&self, pcx: &PatCtxt<'_, 'p, 'tcx>, ctor: &TypedConstructor<'tcx>) -> Vec<Self> {
+        let arity = ctor.arity();
         if arity == 0 {
             return Vec::new();
         }
@@ -1046,7 +1048,7 @@ impl<'p, 'tcx> PatternColumn<'p, 'tcx> {
         let relevant_patterns =
             self.patterns.iter().filter(|pat| ctor.is_covered_by(pcx, pat.ctor()));
         for pat in relevant_patterns {
-            let specialized = pat.specialize(pcx, &ctor);
+            let specialized = pat.specialize(pcx, ctor);
             for (subpat, column) in specialized.iter().zip(&mut specialized_columns) {
                 if subpat.is_or_pat() {
                     column.patterns.extend(subpat.iter_fields())
@@ -1087,14 +1089,15 @@ fn collect_nonexhaustive_missing_variants<'p, 'tcx>(
                 .into_iter()
                 // This will list missing visible variants.
                 .filter(|c| !matches!(c, Constructor::Hidden | Constructor::NonExhaustive))
-                .map(|missing_ctor| WitnessPat::wild_from_ctor(pcx, missing_ctor)),
+                .map(|missing_ctor| missing_ctor.typed(pcx).fill_with_wildcards(pcx)),
         )
     }
 
     // Recurse into the fields.
     for ctor in set.present {
-        let specialized_columns = column.specialize(pcx, &ctor);
-        let wild_pat = WitnessPat::wild_from_ctor(pcx, ctor);
+        let typed_ctor = ctor.typed(pcx);
+        let specialized_columns = column.specialize(pcx, &typed_ctor);
+        let wild_pat = typed_ctor.fill_with_wildcards(pcx);
         for (i, col_i) in specialized_columns.iter().enumerate() {
             // Compute witnesses for each column.
             let wits_for_col_i = collect_nonexhaustive_missing_variants(cx, col_i);
@@ -1175,7 +1178,7 @@ fn lint_overlapping_range_endpoints<'p, 'tcx>(
 
     // Recurse into the fields.
     for ctor in set.present {
-        for col in column.specialize(pcx, &ctor) {
+        for col in column.specialize(pcx, &ctor.typed(pcx)) {
             lint_overlapping_range_endpoints(cx, &col, lint_root);
         }
     }

@@ -541,10 +541,8 @@ impl OpaqueId {
 /// A value can be decomposed into a constructor applied to some fields. This struct represents
 /// the constructor. See also `Fields`.
 ///
-/// `pat_constructor` retrieves the constructor corresponding to a pattern.
-/// `specialize_constructor` returns the list of fields corresponding to a pattern, given a
-/// constructor. `Constructor::apply` reconstructs the pattern from a pair of `Constructor` and
-/// `Fields`.
+/// Several methods require additional type information. For this, use `ctor.typed()` to obtain a
+/// [`TypedConstructor`].
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Constructor<'tcx> {
     /// The constructor for patterns that have a single constructor, like tuples, struct patterns
@@ -621,37 +619,8 @@ impl<'tcx> Constructor<'tcx> {
         }
     }
 
-    /// The number of fields for this constructor. This must be kept in sync with
-    /// `Fields::wildcards`.
-    pub(super) fn arity(&self, pcx: &PatCtxt<'_, '_, 'tcx>) -> usize {
-        match self {
-            Single | Variant(_) => match pcx.ty.kind() {
-                ty::Tuple(fs) => fs.len(),
-                ty::Ref(..) => 1,
-                ty::Adt(adt, ..) => {
-                    if adt.is_box() {
-                        // The only legal patterns of type `Box` (outside `std`) are `_` and box
-                        // patterns. If we're here we can assume this is a box pattern.
-                        1
-                    } else {
-                        let variant = &adt.variant(self.variant_index_for_adt(*adt));
-                        Fields::list_variant_nonhidden_fields(pcx.cx, pcx.ty, variant).count()
-                    }
-                }
-                _ => bug!("Unexpected type for `Single` constructor: {:?}", pcx.ty),
-            },
-            Slice(slice) => slice.arity(),
-            Str(..)
-            | F32Range(..)
-            | F64Range(..)
-            | IntRange(..)
-            | Opaque(..)
-            | NonExhaustive
-            | Hidden
-            | Missing { .. }
-            | Wildcard => 0,
-            Or => bug!("The `Or` constructor doesn't have a fixed arity"),
-        }
+    pub(super) fn typed(self, pcx: &PatCtxt<'_, '_, 'tcx>) -> TypedConstructor<'tcx> {
+        TypedConstructor::from_ctor(pcx, self)
     }
 
     /// Returns whether `self` is covered by `other`, i.e. whether `self` is a subset of `other`.
@@ -706,6 +675,87 @@ impl<'tcx> Constructor<'tcx> {
                 other
             ),
         }
+    }
+}
+
+/// A constructor along the type of its fields. Derefs to [`Constructor`].
+#[derive(Debug)]
+pub(super) struct TypedConstructor<'tcx> {
+    ctor: Constructor<'tcx>,
+    field_tys: SmallVec<[Ty<'tcx>; 2]>,
+}
+
+impl<'tcx> TypedConstructor<'tcx> {
+    #[instrument(level = "trace", skip(pcx), ret)]
+    pub(super) fn from_ctor(pcx: &PatCtxt<'_, '_, 'tcx>, ctor: Constructor<'tcx>) -> Self {
+        let ty = pcx.ty;
+        let cx = pcx.cx;
+        let field_tys = match &ctor {
+            Single | Variant(_) => match ty.kind() {
+                ty::Tuple(fs) => fs.iter().collect(),
+                ty::Ref(_, rty, _) => once(*rty).collect(),
+                ty::Adt(adt, args) => {
+                    if adt.is_box() {
+                        // The only legal patterns of type `Box` (outside `std`) are `_` and box
+                        // patterns. If we're here we can assume this is a box pattern.
+                        once(args.type_at(0)).collect()
+                    } else {
+                        let variant = &adt.variant((&ctor).variant_index_for_adt(*adt));
+                        Fields::list_variant_nonhidden_fields(cx, ty, variant)
+                            .map(|(_, ty)| ty)
+                            .collect()
+                    }
+                }
+                _ => bug!("Unexpected type for `Single` constructor: {ty:?}"),
+            },
+            Slice(slice) => match *ty.kind() {
+                ty::Slice(ty) | ty::Array(ty, _) => {
+                    let arity = slice.arity();
+                    (0..arity).map(|_| ty).collect()
+                }
+                _ => bug!("bad slice pattern {ctor:?} with type {ty:?}"),
+            },
+            Str(..)
+            | F32Range(..)
+            | F64Range(..)
+            | IntRange(..)
+            | Opaque(..)
+            | NonExhaustive
+            | Hidden
+            | Missing { .. }
+            | Wildcard => Default::default(),
+            Or => {
+                bug!("called `TypedConstructor::typed` on an `Or` ctor")
+            }
+        };
+        Self { ctor, field_tys }
+    }
+
+    /// The untyped constructor.
+    pub(super) fn untyped(&self) -> &Constructor<'tcx> {
+        &self.ctor
+    }
+    pub(super) fn arity(&self) -> usize {
+        self.field_tys.len()
+    }
+
+    /// Construct a pattern that matches everything that starts with this constructor.
+    /// For example, if `ctor` is a `Constructor::Variant` for `Option::Some`, we get the pattern
+    /// `Some(_)`.
+    pub(super) fn fill_with_wildcards(&self, pcx: &PatCtxt<'_, '_, 'tcx>) -> WitnessPat<'tcx> {
+        let fields = self.field_tys.iter().copied().map(|ty| WitnessPat::wildcard(ty)).collect();
+        WitnessPat::new(self.ctor.clone(), fields, pcx.ty)
+    }
+
+    fn iter_field_tys<'a>(&'a self) -> impl Iterator<Item = Ty<'tcx>> + Captures<'a> {
+        self.field_tys.iter().copied()
+    }
+}
+
+impl<'tcx> std::ops::Deref for TypedConstructor<'tcx> {
+    type Target = Constructor<'tcx>;
+    fn deref(&self) -> &Self::Target {
+        &self.ctor
     }
 }
 
@@ -1096,47 +1146,8 @@ impl<'p, 'tcx> Fields<'p, 'tcx> {
     /// Creates a new list of wildcard fields for a given constructor. The result must have a
     /// length of `constructor.arity()`.
     #[instrument(level = "trace")]
-    pub(super) fn wildcards(pcx: &PatCtxt<'_, 'p, 'tcx>, constructor: &Constructor<'tcx>) -> Self {
-        let ret = match constructor {
-            Single | Variant(_) => match pcx.ty.kind() {
-                ty::Tuple(fs) => Fields::wildcards_from_tys(pcx.cx, fs.iter(), pcx.span),
-                ty::Ref(_, rty, _) => Fields::wildcards_from_tys(pcx.cx, once(*rty), pcx.span),
-                ty::Adt(adt, args) => {
-                    if adt.is_box() {
-                        // The only legal patterns of type `Box` (outside `std`) are `_` and box
-                        // patterns. If we're here we can assume this is a box pattern.
-                        Fields::wildcards_from_tys(pcx.cx, once(args.type_at(0)), pcx.span)
-                    } else {
-                        let variant = &adt.variant(constructor.variant_index_for_adt(*adt));
-                        let tys = Fields::list_variant_nonhidden_fields(pcx.cx, pcx.ty, variant)
-                            .map(|(_, ty)| ty);
-                        Fields::wildcards_from_tys(pcx.cx, tys, pcx.span)
-                    }
-                }
-                _ => bug!("Unexpected type for `Single` constructor: {:?}", pcx),
-            },
-            Slice(slice) => match *pcx.ty.kind() {
-                ty::Slice(ty) | ty::Array(ty, _) => {
-                    let arity = slice.arity();
-                    Fields::wildcards_from_tys(pcx.cx, (0..arity).map(|_| ty), pcx.span)
-                }
-                _ => bug!("bad slice pattern {:?} {:?}", constructor, pcx),
-            },
-            Str(..)
-            | F32Range(..)
-            | F64Range(..)
-            | IntRange(..)
-            | Opaque(..)
-            | NonExhaustive
-            | Hidden
-            | Missing { .. }
-            | Wildcard => Fields::empty(),
-            Or => {
-                bug!("called `Fields::wildcards` on an `Or` ctor")
-            }
-        };
-        debug!(?ret);
-        ret
+    pub(super) fn wildcards(pcx: &PatCtxt<'_, 'p, 'tcx>, ctor: &TypedConstructor<'tcx>) -> Self {
+        Self::wildcards_from_tys(pcx.cx, ctor.iter_field_tys(), pcx.span)
     }
 
     /// Returns the list of patterns.
@@ -1382,38 +1393,27 @@ impl<'p, 'tcx> DeconstructedPat<'p, 'tcx> {
     pub(super) fn specialize<'a>(
         &'a self,
         pcx: &PatCtxt<'_, 'p, 'tcx>,
-        other_ctor: &Constructor<'tcx>,
+        other_ctor: &TypedConstructor<'tcx>,
     ) -> SmallVec<[&'p DeconstructedPat<'p, 'tcx>; 2]> {
-        match (&self.ctor, other_ctor) {
-            (Wildcard, _) => {
+        match &self.ctor {
+            Wildcard => {
                 // We return a wildcard for each field of `other_ctor`.
                 Fields::wildcards(pcx, other_ctor).iter_patterns().collect()
             }
-            (Slice(self_slice), Slice(other_slice))
-                if self_slice.arity() != other_slice.arity() =>
-            {
-                // The only tricky case: two slices of different arity. Since `self_slice` covers
-                // `other_slice`, `self_slice` must be `VarLen`, i.e. of the form
-                // `[prefix, .., suffix]`. Moreover `other_slice` is guaranteed to have a larger
-                // arity. So we fill the middle part with enough wildcards to reach the length of
-                // the new, larger slice.
-                match self_slice.kind {
-                    FixedLen(_) => bug!("{:?} doesn't cover {:?}", self_slice, other_slice),
-                    VarLen(prefix, suffix) => {
-                        let (ty::Slice(inner_ty) | ty::Array(inner_ty, _)) = *self.ty.kind() else {
-                            bug!("bad slice pattern {:?} {:?}", self.ctor, self.ty);
-                        };
-                        let prefix = &self.fields.fields[..prefix];
-                        let suffix = &self.fields.fields[self_slice.arity() - suffix..];
-                        let wildcard: &_ = pcx
-                            .cx
-                            .pattern_arena
-                            .alloc(DeconstructedPat::wildcard(inner_ty, pcx.span));
-                        let extra_wildcards = other_slice.arity() - self_slice.arity();
-                        let extra_wildcards = (0..extra_wildcards).map(|_| wildcard);
-                        prefix.iter().chain(extra_wildcards).chain(suffix).collect()
-                    }
+            Slice(Slice { kind: VarLen(prefix, suffix), .. }) => {
+                // The only tricky case: the output slice might be larger than this one, so we
+                // carefully fill the prefix and suffix, leaving wildcards in the middle.
+                let mut ret: SmallVec<[_; 2]> =
+                    Fields::wildcards(pcx, other_ctor).iter_patterns().collect();
+                let other_arity = ret.len();
+                let this_arity = self.fields.fields.len();
+                for i in 0..*prefix {
+                    ret[i] = &self.fields.fields[i];
                 }
+                for i in 0..*suffix {
+                    ret[other_arity - 1 - i] = &self.fields.fields[this_arity - 1 - i];
+                }
+                ret
             }
             _ => self.fields.iter_patterns().collect(),
         }
@@ -1550,6 +1550,8 @@ impl<'p, 'tcx> fmt::Debug for DeconstructedPat<'p, 'tcx> {
 
 /// Same idea as `DeconstructedPat`, except this is a fictitious pattern built up for diagnostics
 /// purposes. As such they don't use interning and can be cloned.
+/// Build either with `WitnessPat::wildcard`/`WitnessPat::non_exhaustive`, or most often from
+/// `TypedConstructor::fill_with_wildcards`.
 #[derive(Debug, Clone)]
 pub(crate) struct WitnessPat<'tcx> {
     ctor: Constructor<'tcx>,
@@ -1561,20 +1563,13 @@ impl<'tcx> WitnessPat<'tcx> {
     pub(super) fn new(ctor: Constructor<'tcx>, fields: Vec<Self>, ty: Ty<'tcx>) -> Self {
         Self { ctor, fields, ty }
     }
+    /// A `_` witness.
     pub(super) fn wildcard(ty: Ty<'tcx>) -> Self {
         Self::new(Wildcard, Vec::new(), ty)
     }
-
-    /// Construct a pattern that matches everything that starts with this constructor.
-    /// For example, if `ctor` is a `Constructor::Variant` for `Option::Some`, we get the pattern
-    /// `Some(_)`.
-    pub(super) fn wild_from_ctor(pcx: &PatCtxt<'_, '_, 'tcx>, ctor: Constructor<'tcx>) -> Self {
-        // Reuse `Fields::wildcards` to get the types.
-        let fields = Fields::wildcards(pcx, &ctor)
-            .iter_patterns()
-            .map(|deco_pat| Self::wildcard(deco_pat.ty()))
-            .collect();
-        Self::new(ctor, fields, pcx.ty)
+    /// A `_` witness coming from a non-exhaustive type.
+    pub(super) fn non_exhaustive(ty: Ty<'tcx>) -> Self {
+        Self::new(NonExhaustive, Vec::new(), ty)
     }
 
     pub(super) fn ctor(&self) -> &Constructor<'tcx> {
