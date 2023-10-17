@@ -472,7 +472,9 @@
 //! - The match is not exhaustive;
 //! - Adding `Pair(Some(1..), true)` and `Pair(None, true)` would make the match exhaustive.
 
-use super::deconstruct_pat::{Constructor, ConstructorSet, DeconstructedPat, IntRange, WitnessPat};
+use super::deconstruct_pat::{
+    Constructor, ConstructorSet, DeconstructedPat, IntRange, SplitConstructorSet, WitnessPat,
+};
 use crate::errors::{NonExhaustiveOmittedPattern, Overlap, OverlappingRangeEndpoints, Uncovered};
 
 use rustc_data_structures::captures::Captures;
@@ -1000,21 +1002,77 @@ fn compute_usefulness<'p, 'tcx>(
     ret
 }
 
+/// A column of patterns in the matrix, where a column is the intuitive notion of "subpatterns that
+/// inspect the same subvalue".
+/// This is used to traverse patterns column-by-column for lints. Despite similarities with
+/// `is_useful`, this is a different traversal. Notably this is linear in the depth of patterns,
+/// whereas `is_useful` is worst-case exponential (exhaustiveness is NP-complete).
+#[derive(Debug)]
+struct PatternColumn<'p, 'tcx> {
+    patterns: Vec<&'p DeconstructedPat<'p, 'tcx>>,
+}
+
+impl<'p, 'tcx> PatternColumn<'p, 'tcx> {
+    fn new(patterns: Vec<&'p DeconstructedPat<'p, 'tcx>>) -> Self {
+        Self { patterns }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.patterns.is_empty()
+    }
+    fn head_ty(&self, cx: &MatchCheckCtxt<'p, 'tcx>) -> Ty<'tcx> {
+        cx.reveal_opaque_ty(self.patterns[0].ty())
+    }
+
+    fn analyze_ctors(&self, pcx: &PatCtxt<'_, 'p, 'tcx>) -> SplitConstructorSet<'tcx> {
+        let column_ctors = self.patterns.iter().map(|p| p.ctor());
+        ConstructorSet::for_ty(pcx.cx, pcx.ty).split(pcx, column_ctors)
+    }
+    fn iter<'a>(&'a self) -> impl Iterator<Item = &'p DeconstructedPat<'p, 'tcx>> + Captures<'a> {
+        self.patterns.iter().copied()
+    }
+
+    fn specialize(&self, pcx: &PatCtxt<'_, 'p, 'tcx>, ctor: &Constructor<'tcx>) -> Vec<Self> {
+        let arity = ctor.arity(pcx);
+        if arity == 0 {
+            return Vec::new();
+        }
+
+        // We specialize the column by `ctor`. This gives us `arity`-many columns of patterns. These
+        // columns may have different lengths in the presence of or-patterns (this is why we can't
+        // reuse `Matrix`).
+        let mut specialized_columns: Vec<_> =
+            (0..arity).map(|_| Self { patterns: Vec::new() }).collect();
+        let relevant_patterns =
+            self.patterns.iter().filter(|pat| ctor.is_covered_by(pcx, pat.ctor()));
+        for pat in relevant_patterns {
+            let specialized = pat.specialize(pcx, &ctor);
+            for (subpat, column) in specialized.iter().zip(&mut specialized_columns) {
+                if subpat.is_or_pat() {
+                    column.patterns.extend(subpat.iter_fields())
+                } else {
+                    column.patterns.push(subpat)
+                }
+            }
+        }
+        specialized_columns
+    }
+}
+
 /// Traverse the patterns to collect any variants of a non_exhaustive enum that fail to be mentioned
-/// in a given column. This traverses patterns column-by-column, where a column is the intuitive
-/// notion of "subpatterns that inspect the same subvalue".
-/// Despite similarities with `is_useful`, this traversal is different. Notably this is linear in the
-/// depth of patterns, whereas `is_useful` is worst-case exponential (exhaustiveness is NP-complete).
+/// in a given column.
 #[instrument(level = "debug", skip(cx), ret)]
 fn collect_nonexhaustive_missing_variants<'p, 'tcx>(
     cx: &MatchCheckCtxt<'p, 'tcx>,
-    column: &[&DeconstructedPat<'p, 'tcx>],
+    column: &PatternColumn<'p, 'tcx>,
 ) -> Vec<WitnessPat<'tcx>> {
-    let ty = cx.reveal_opaque_ty(column[0].ty());
+    if column.is_empty() {
+        return Vec::new();
+    }
+    let ty = column.head_ty(cx);
     let pcx = &PatCtxt { cx, ty, span: DUMMY_SP, is_top_level: false };
 
-    let column_ctors = column.iter().map(|p| p.ctor());
-    let set = ConstructorSet::for_ty(pcx.cx, pcx.ty).split(pcx, column_ctors);
+    let set = column.analyze_ctors(pcx);
     if set.present.is_empty() {
         // We can't consistently handle the case where no constructors are present (since this would
         // require digging deep through any type in case there's a non_exhaustive enum somewhere),
@@ -1035,35 +1093,11 @@ fn collect_nonexhaustive_missing_variants<'p, 'tcx>(
 
     // Recurse into the fields.
     for ctor in set.present {
-        let arity = ctor.arity(pcx);
-        if arity == 0 {
-            continue;
-        }
-
-        // We specialize the column by `ctor`. This gives us `arity`-many columns of patterns. These
-        // columns may have different lengths in the presence of or-patterns (this is why we can't
-        // reuse `Matrix`).
-        let mut specialized_columns: Vec<Vec<_>> = (0..arity).map(|_| Vec::new()).collect();
-        let relevant_patterns = column.iter().filter(|pat| ctor.is_covered_by(pcx, pat.ctor()));
-        for pat in relevant_patterns {
-            let specialized = pat.specialize(pcx, &ctor);
-            for (subpat, sub_column) in specialized.iter().zip(&mut specialized_columns) {
-                if subpat.is_or_pat() {
-                    sub_column.extend(subpat.iter_fields())
-                } else {
-                    sub_column.push(subpat)
-                }
-            }
-        }
-        debug_assert!(
-            !specialized_columns[0].is_empty(),
-            "ctor {ctor:?} was listed as present but isn't"
-        );
-
+        let specialized_columns = column.specialize(pcx, &ctor);
         let wild_pat = WitnessPat::wild_from_ctor(pcx, ctor);
         for (i, col_i) in specialized_columns.iter().enumerate() {
             // Compute witnesses for each column.
-            let wits_for_col_i = collect_nonexhaustive_missing_variants(cx, col_i.as_slice());
+            let wits_for_col_i = collect_nonexhaustive_missing_variants(cx, col_i);
             // For each witness, we build a new pattern in the shape of `ctor(_, _, wit, _, _)`,
             // adding enough wildcards to match `arity`.
             for wit in wits_for_col_i {
@@ -1077,24 +1111,19 @@ fn collect_nonexhaustive_missing_variants<'p, 'tcx>(
 }
 
 /// Traverse the patterns to warn the user about ranges that overlap on their endpoints.
-/// This traverses patterns column-by-column, where a column is the intuitive notion of "subpatterns
-/// that inspect the same subvalue". Despite similarities with `is_useful`, this traversal is
-/// different. Notably this is linear in the depth of patterns, whereas `is_useful` is worst-case
-/// exponential (exhaustiveness is NP-complete).
 #[instrument(level = "debug", skip(cx, lint_root))]
 fn lint_overlapping_range_endpoints<'p, 'tcx>(
     cx: &MatchCheckCtxt<'p, 'tcx>,
-    column: &[&DeconstructedPat<'p, 'tcx>],
+    column: &PatternColumn<'p, 'tcx>,
     lint_root: HirId,
 ) {
     if column.is_empty() {
         return;
     }
-    let ty = cx.reveal_opaque_ty(column[0].ty());
+    let ty = column.head_ty(cx);
     let pcx = &PatCtxt { cx, ty, span: DUMMY_SP, is_top_level: false };
 
-    let column_ctors = column.iter().map(|p| p.ctor());
-    let set = ConstructorSet::for_ty(pcx.cx, pcx.ty).split(pcx, column_ctors);
+    let set = column.analyze_ctors(pcx);
 
     if IntRange::is_integral(ty) {
         // If two ranges overlapped, the split set will contain their intersection as a singleton.
@@ -1106,7 +1135,7 @@ fn lint_overlapping_range_endpoints<'p, 'tcx>(
                 let mut prefixes: SmallVec<[_; 1]> = Default::default();
                 let mut suffixes: SmallVec<[_; 1]> = Default::default();
                 // Iterate on patterns that contained `overlap`.
-                for pat in column {
+                for pat in column.iter() {
                     let this_span = pat.span();
                     let Constructor::IntRange(this_range) = pat.ctor() else { continue };
                     if this_range.is_singleton() {
@@ -1146,29 +1175,8 @@ fn lint_overlapping_range_endpoints<'p, 'tcx>(
 
     // Recurse into the fields.
     for ctor in set.present {
-        let arity = ctor.arity(pcx);
-        if arity == 0 {
-            continue;
-        }
-
-        // We specialize the column by `ctor`. This gives us `arity`-many columns of patterns. These
-        // columns may have different lengths in the presence of or-patterns (this is why we can't
-        // reuse `Matrix`).
-        let mut specialized_columns: Vec<Vec<_>> = (0..arity).map(|_| Vec::new()).collect();
-        let relevant_patterns = column.iter().filter(|pat| ctor.is_covered_by(pcx, pat.ctor()));
-        for pat in relevant_patterns {
-            let specialized = pat.specialize(pcx, &ctor);
-            for (subpat, sub_column) in specialized.iter().zip(&mut specialized_columns) {
-                if subpat.is_or_pat() {
-                    sub_column.extend(subpat.iter_fields())
-                } else {
-                    sub_column.push(subpat)
-                }
-            }
-        }
-
-        for col in specialized_columns.iter() {
-            lint_overlapping_range_endpoints(cx, col.as_slice(), lint_root);
+        for col in column.specialize(pcx, &ctor) {
+            lint_overlapping_range_endpoints(cx, &col, lint_root);
         }
     }
 }
@@ -1239,7 +1247,7 @@ pub(crate) fn compute_match_usefulness<'p, 'tcx>(
         })
         .collect();
 
-    let pat_column = matrix.heads().collect::<Vec<_>>();
+    let pat_column = PatternColumn::new(matrix.heads().collect());
     lint_overlapping_range_endpoints(cx, &pat_column, lint_root);
 
     // Run the non_exhaustive_omitted_patterns lint. Only run on refutable patterns to avoid hitting
