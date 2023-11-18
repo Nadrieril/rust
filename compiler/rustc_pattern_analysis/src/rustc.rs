@@ -119,7 +119,9 @@ impl<'p, 'tcx> RustcMatchCheckCtxt<'p, 'tcx> {
             // `field.ty()` doesn't normalize after substituting.
             let ty = cx.tcx.normalize_erasing_regions(cx.param_env, ty);
             let is_visible = adt.is_enum() || field.vis.is_accessible_from(cx.module, cx.tcx);
-            let is_uninhabited = cx.tcx.features().exhaustive_patterns && cx.is_uninhabited(ty);
+            let is_uninhabited = (cx.tcx.features().exhaustive_patterns
+                || cx.tcx.features().min_exhaustive_patterns)
+                && cx.is_uninhabited(ty);
 
             if is_uninhabited && (!is_visible || is_non_exhaustive) {
                 None
@@ -872,6 +874,9 @@ impl<'p, 'tcx> TypeCx for RustcMatchCheckCtxt<'p, 'tcx> {
 
     fn is_exhaustive_patterns_feature_on(&self) -> bool {
         self.tcx.features().exhaustive_patterns
+    }
+    fn is_min_exhaustive_patterns_feature_on(&self) -> bool {
+        self.tcx.features().min_exhaustive_patterns
     }
     fn is_opaque_ty(ty: Self::Ty) -> bool {
         matches!(ty.kind(), ty::Alias(ty::Opaque, ..))

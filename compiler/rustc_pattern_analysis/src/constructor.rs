@@ -1009,6 +1009,7 @@ impl<Cx: TypeCx> ConstructorSet<Cx> {
         // In the absence of the `exhaustive_patterns` feature however, we don't count nested empty
         // types as empty. Only non-nested `!` or `enum Foo {}` are considered empty.
         if !pcx.mcx.tycx.is_exhaustive_patterns_feature_on()
+            && !pcx.mcx.tycx.is_min_exhaustive_patterns_feature_on()
             && !(pcx.is_scrutinee && matches!(self, Self::NoConstructors))
         {
             // Treat all missing constructors as nonempty.

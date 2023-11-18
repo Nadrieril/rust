@@ -1199,17 +1199,23 @@ fn compute_exhaustiveness_and_usefulness<'a, 'p, Cx: TypeCx>(
 
     debug!("ty: {ty:?}");
     let pcx = &PlaceCtxt { mcx, ty, is_scrutinee: is_top_level };
+    let ctors_for_ty = pcx.ctors_for_ty();
+    let is_integers = matches!(ctors_for_ty, ConstructorSet::Integers { .. }); // For diagnostics.
 
     // Whether the place/column we are inspecting is known to contain valid data.
-    let place_validity = matrix.place_validity[0];
-    // For backwards compability we allow omitting some empty arms that we ideally shouldn't.
-    let place_validity = place_validity.allow_omitting_side_effecting_arms();
+    let mut place_validity = matrix.place_validity[0];
+    if !mcx.tycx.is_min_exhaustive_patterns_feature_on()
+        || (is_top_level && matches!(ctors_for_ty, ConstructorSet::NoConstructors))
+    {
+        // For backwards compability we allow omitting some empty arms that we ideally shouldn't.
+        place_validity = place_validity.allow_omitting_side_effecting_arms();
+    }
 
     // Analyze the constructors present in this column.
     let ctors = matrix.heads().map(|p| p.ctor());
-    let ctors_for_ty = pcx.ctors_for_ty();
-    let is_integers = matches!(ctors_for_ty, ConstructorSet::Integers { .. }); // For diagnostics.
     let split_set = ctors_for_ty.split(pcx, ctors);
+
+    // Decide what constructors to report.
     let all_missing = split_set.present.is_empty();
 
     // Build the set of constructors we will specialize with. It must cover the whole type.

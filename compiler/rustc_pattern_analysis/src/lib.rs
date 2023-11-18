@@ -64,6 +64,7 @@ pub trait TypeCx: Sized + Clone + fmt::Debug {
 
     fn is_opaque_ty(ty: Self::Ty) -> bool;
     fn is_exhaustive_patterns_feature_on(&self) -> bool;
+    fn is_min_exhaustive_patterns_feature_on(&self) -> bool;
 
     /// The number of fields for this constructor.
     fn ctor_arity(&self, ctor: &Constructor<Self>, ty: Self::Ty) -> usize;
