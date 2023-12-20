@@ -26,15 +26,7 @@ use rustc_index::Idx;
 use rustc_middle::ty::Ty;
 
 use crate::constructor::{Constructor, ConstructorSet};
-#[cfg(feature = "rustc")]
-use crate::lints::{
-    lint_nonexhaustive_missing_variants, lint_overlapping_range_endpoints, PatternColumn,
-};
 use crate::pat::DeconstructedPat;
-#[cfg(feature = "rustc")]
-use crate::rustc::RustcMatchCheckCtxt;
-#[cfg(feature = "rustc")]
-use crate::usefulness::{compute_match_usefulness, ValidityConstraint};
 
 // It's not possible to only enable the `typed_arena` dependency when the `rustc` feature is off, so
 // we use another feature instead. The crate won't compile if one of these isn't enabled.
@@ -110,26 +102,48 @@ impl<'p, Cx: TypeCx> Copy for MatchArm<'p, Cx> {}
 /// useful, and runs some lints.
 #[cfg(feature = "rustc")]
 pub fn analyze_match<'p, 'tcx>(
-    tycx: &RustcMatchCheckCtxt<'p, 'tcx>,
+    tycx: &rustc::RustcMatchCheckCtxt<'p, 'tcx>,
     arms: &[rustc::MatchArm<'p, 'tcx>],
     scrut_ty: Ty<'tcx>,
 ) -> rustc::UsefulnessReport<'p, 'tcx> {
+    use rustc_middle::ty;
+    use rustc_session::lint;
+
     // Arena to store the extra wildcards we construct during analysis.
     let wildcard_arena = tycx.pattern_arena;
-    let scrut_validity = ValidityConstraint::from_bool(tycx.known_valid_scrutinee);
+    let scrut_validity = usefulness::ValidityConstraint::from_bool(tycx.known_valid_scrutinee);
     let cx = MatchCtxt { tycx, wildcard_arena };
 
-    let report = compute_match_usefulness(cx, arms, scrut_ty, scrut_validity);
+    if !tycx.known_valid_scrutinee && arms.iter().all(|arm| arm.has_guard) {
+        let is_directly_empty = match scrut_ty.kind() {
+            ty::Adt(def, ..) => {
+                def.is_enum()
+                    && def.variants().is_empty()
+                    && !tycx.is_foreign_non_exhaustive_enum(scrut_ty)
+            }
+            ty::Never => true,
+            _ => false,
+        };
+        if is_directly_empty {
+            // For backwards compability we allow an empty match in this case.
+            return rustc::UsefulnessReport {
+                arm_usefulness: Vec::new(),
+                non_exhaustiveness_witnesses: Vec::new(),
+            };
+        }
+    }
 
-    let pat_column = PatternColumn::new(arms);
+    let report = usefulness::compute_match_usefulness(cx, arms, scrut_ty, scrut_validity);
+
+    let pat_column = lints::PatternColumn::new(arms);
 
     // Lint on ranges that overlap on their endpoints, which is likely a mistake.
-    lint_overlapping_range_endpoints(cx, &pat_column);
+    lints::lint_overlapping_range_endpoints(cx, &pat_column);
 
     // Run the non_exhaustive_omitted_patterns lint. Only run on refutable patterns to avoid hitting
     // `if let`s. Only run if the match is exhaustive otherwise the error is redundant.
     if tycx.refutable && report.non_exhaustiveness_witnesses.is_empty() {
-        lint_nonexhaustive_missing_variants(cx, arms, &pat_column, scrut_ty)
+        lints::lint_nonexhaustive_missing_variants(cx, arms, &pat_column, scrut_ty)
     }
 
     report
