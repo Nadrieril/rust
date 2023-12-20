@@ -125,6 +125,21 @@ pub fn analyze_match<'p, 'tcx>(
             _ => false,
         };
         if is_directly_empty {
+            if tycx.tcx.features().min_exhaustive_patterns {
+                tycx.tcx.emit_spanned_lint(
+                    lint::builtin::EMPTY_MATCH_ON_UNSAFE_PLACE,
+                    tycx.match_lint_level,
+                    tycx.whole_match_span.unwrap_or(tycx.scrut_span),
+                    errors::EmptyMatchOnUnsafePlace {
+                        scrut_span: tycx.scrut_span,
+                        suggestion: errors::EmptyMatchOnUnsafePlaceWrapSuggestion {
+                            scrut_start: tycx.scrut_span.shrink_to_lo(),
+                            scrut_end: tycx.scrut_span.shrink_to_hi(),
+                        },
+                    },
+                );
+            }
+
             // For backwards compability we allow an empty match in this case.
             return rustc::UsefulnessReport {
                 arm_usefulness: Vec::new(),

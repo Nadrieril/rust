@@ -579,7 +579,7 @@ LL |         _x if false => {}
    |         ^^
 
 error[E0004]: non-exhaustive patterns: `&_` not covered
-  --> $DIR/empty-types.rs:633:11
+  --> $DIR/empty-types.rs:634:11
    |
 LL |     match ref_never {
    |           ^^^^^^^^^ pattern `&_` not covered
@@ -594,7 +594,7 @@ LL +         &_ => todo!()
    |
 
 error[E0004]: non-exhaustive patterns: `Some(_)` not covered
-  --> $DIR/empty-types.rs:661:11
+  --> $DIR/empty-types.rs:662:11
    |
 LL |     match *x {
    |           ^^ pattern `Some(_)` not covered

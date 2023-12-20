@@ -44,6 +44,27 @@ impl<'tcx> Uncovered<'tcx> {
 }
 
 #[derive(LintDiagnostic)]
+#[diag(pattern_analysis_empty_match_on_unsafe_place)]
+pub struct EmptyMatchOnUnsafePlace {
+    #[note]
+    pub scrut_span: Span,
+    #[subdiagnostic]
+    pub suggestion: EmptyMatchOnUnsafePlaceWrapSuggestion,
+}
+
+#[derive(Subdiagnostic)]
+#[multipart_suggestion(
+    pattern_analysis_empty_match_on_unsafe_place_wrap_suggestion,
+    applicability = "maybe-incorrect"
+)]
+pub struct EmptyMatchOnUnsafePlaceWrapSuggestion {
+    #[suggestion_part(code = "{{ ")]
+    pub scrut_start: Span,
+    #[suggestion_part(code = " }}")]
+    pub scrut_end: Span,
+}
+
+#[derive(LintDiagnostic)]
 #[diag(pattern_analysis_overlapping_range_endpoints)]
 #[note]
 pub struct OverlappingRangeEndpoints<'tcx> {

@@ -155,7 +155,7 @@ fn void_same_as_never(x: NeverBundle) {
         }
 
         let ref_void: &Void = &x.void;
-        match *ref_void {}
+        match *ref_void {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
         match *ref_void {
             _ => {}
         }
@@ -177,12 +177,12 @@ fn void_same_as_never(x: NeverBundle) {
             _a => {}
         }
         let union_void = Uninit::<Void>::new();
-        match union_void.value {}
+        match union_void.value {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
         match union_void.value {
             _ => {}
         }
         let ptr_void: *const Void = std::ptr::null();
-        match *ptr_void {}
+        match *ptr_void {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
         match *ptr_void {
             _ => {}
         }
@@ -231,41 +231,41 @@ fn invalid_scrutinees(x: NeverBundle) {
     // These should be considered !known_valid and not warn unreachable.
     unsafe {
         // A pointer may point to a place with an invalid value.
-        match *ptr_never {}
+        match *ptr_never {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
         match *ptr_never {
             _ => {}
         }
-        // A reference may point to a place with an invalid value.
-        match *ref_never {}
+        // We conservatively assume that a reference may point to a place with an invalid value.
+        match *ref_never {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
         match *ref_never {
             _ => {}
         }
         // This field access is a dereference.
         let ref_x: &NeverBundle = &x;
-        match ref_x.never {}
+        match ref_x.never {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
         match ref_x.never {
             _ => {}
         }
         // This nested field access is a dereference.
         let nested_ref_x: &NestedNeverBundle = &nested_x;
-        match nested_ref_x.0.never {}
+        match nested_ref_x.0.never {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
         match nested_ref_x.0.never {
             _ => {}
         }
         // A cast does not load.
-        match (*ptr_never as Void) {}
+        match (*ptr_never as Void) {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
         match (*ptr_never as Void) {
             _ => {}
         }
         // A union field may contain invalid data.
         let union_never = Uninit::<!>::new();
-        match union_never.value {}
+        match union_never.value {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
         match union_never.value {
             _ => {}
         }
         // Indexing is like a field access. This one accesses behind a reference.
         let slice_never: &[!] = &[];
-        match slice_never[0] {}
+        match slice_never[0] {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
         match slice_never[0] {
             _ => {}
         }
@@ -306,9 +306,9 @@ fn nested_validity_tracking(bundle: NeverBundle) {
 fn invalid_empty_match(bundle: NeverBundle) {
     // We allow these two for backwards-compability.
     let x: &! = &bundle.never;
-    match *x {}
+    match *x {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
     let x: &Void = &bundle.void;
-    match *x {}
+    match *x {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
 
     let x: &(u32, !) = &bundle.tuple_half_never;
     match *x {} //[normal,min_exh_pats]~ ERROR non-exhaustive
@@ -471,7 +471,7 @@ fn bindings(x: NeverBundle) {
     }
 
     // On a !known_valid place.
-    match *ref_never {}
+    match *ref_never {} //[min_exh_pats]~ WARN empty match on potentially-invalid data
     match *ref_never {
         // useful, reachable
         _ => {}
@@ -628,6 +628,7 @@ fn guards_and_validity(x: NeverBundle) {
     }
     // The above still applies to the implicit `_` pattern used for exhaustiveness.
     match *ref_never {
+        //[min_exh_pats]~^ WARN empty match on potentially-invalid data
         // useful, !reachable
         _a if false => {}
     }

@@ -1,0 +1,24 @@
+// run-rustfix
+#![feature(min_exhaustive_patterns)]
+#![deny(empty_match_on_unsafe_place)]
+#![allow(unreachable_code)]
+
+#[derive(Copy, Clone)]
+enum Void {}
+
+macro_rules! deref {
+    ($e:expr) => {
+        { *$e }
+    };
+}
+
+fn main() {
+    let ptr: *const Void = std::ptr::null();
+    unsafe {
+        match { *ptr } {} //~ ERROR empty match on potentially-invalid data
+
+        // rustfix unfortunately changes the macro instead of this expression; we'd need better
+        // spans.
+        match deref!(ptr) {} //~ ERROR empty match on potentially-invalid data
+    }
+}

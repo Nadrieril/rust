@@ -192,6 +192,23 @@ error: unreachable pattern
 LL |             _ => {}
    |             ^
 
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:157:9
+   |
+LL |         match *ref_void {}
+   |         ^^^^^^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:157:15
+   |
+LL |         match *ref_void {}
+   |               ^^^^^^^^^
+   = note: `#[warn(empty_match_on_unsafe_place)]` on by default
+help: consider forcing a read of the value
+   |
+LL |         match { *ref_void } {}
+   |               +           +
+
 error[E0004]: non-exhaustive patterns: `Some(_)` not covered
   --> $DIR/empty-types.rs:162:15
    |
@@ -209,6 +226,38 @@ help: ensure that all possible cases are being handled by adding a match arm wit
 LL ~             None => {},
 LL +             Some(_) => todo!()
    |
+
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:179:9
+   |
+LL |         match union_void.value {}
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:179:15
+   |
+LL |         match union_void.value {}
+   |               ^^^^^^^^^^^^^^^^
+help: consider forcing a read of the value
+   |
+LL |         match { union_void.value } {}
+   |               +                  +
+
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:184:9
+   |
+LL |         match *ptr_void {}
+   |         ^^^^^^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:184:15
+   |
+LL |         match *ptr_void {}
+   |               ^^^^^^^^^
+help: consider forcing a read of the value
+   |
+LL |         match { *ptr_void } {}
+   |               +           +
 
 error: unreachable pattern
   --> $DIR/empty-types.rs:205:13
@@ -240,6 +289,118 @@ error: unreachable pattern
 LL |             _ => {}
    |             ^
 
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:233:9
+   |
+LL |         match *ptr_never {}
+   |         ^^^^^^^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:233:15
+   |
+LL |         match *ptr_never {}
+   |               ^^^^^^^^^^
+help: consider forcing a read of the value
+   |
+LL |         match { *ptr_never } {}
+   |               +            +
+
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:238:9
+   |
+LL |         match *ref_never {}
+   |         ^^^^^^^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:238:15
+   |
+LL |         match *ref_never {}
+   |               ^^^^^^^^^^
+help: consider forcing a read of the value
+   |
+LL |         match { *ref_never } {}
+   |               +            +
+
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:244:9
+   |
+LL |         match ref_x.never {}
+   |         ^^^^^^^^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:244:15
+   |
+LL |         match ref_x.never {}
+   |               ^^^^^^^^^^^
+help: consider forcing a read of the value
+   |
+LL |         match { ref_x.never } {}
+   |               +             +
+
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:250:9
+   |
+LL |         match nested_ref_x.0.never {}
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:250:15
+   |
+LL |         match nested_ref_x.0.never {}
+   |               ^^^^^^^^^^^^^^^^^^^^
+help: consider forcing a read of the value
+   |
+LL |         match { nested_ref_x.0.never } {}
+   |               +                      +
+
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:255:9
+   |
+LL |         match (*ptr_never as Void) {}
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:255:15
+   |
+LL |         match (*ptr_never as Void) {}
+   |               ^^^^^^^^^^^^^^^^^^^^
+help: consider forcing a read of the value
+   |
+LL |         match { (*ptr_never as Void) } {}
+   |               +                      +
+
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:261:9
+   |
+LL |         match union_never.value {}
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:261:15
+   |
+LL |         match union_never.value {}
+   |               ^^^^^^^^^^^^^^^^^
+help: consider forcing a read of the value
+   |
+LL |         match { union_never.value } {}
+   |               +                   +
+
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:267:9
+   |
+LL |         match slice_never[0] {}
+   |         ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:267:15
+   |
+LL |         match slice_never[0] {}
+   |               ^^^^^^^^^^^^^^
+help: consider forcing a read of the value
+   |
+LL |         match { slice_never[0] } {}
+   |               +                +
+
 error: unreachable pattern
   --> $DIR/empty-types.rs:285:9
    |
@@ -263,6 +424,38 @@ error: unreachable pattern
    |
 LL |         Err(_) => {}
    |         ^^^^^^
+
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:308:5
+   |
+LL |     match *x {}
+   |     ^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:308:11
+   |
+LL |     match *x {}
+   |           ^^
+help: consider forcing a read of the value
+   |
+LL |     match { *x } {}
+   |           +    +
+
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:310:5
+   |
+LL |     match *x {}
+   |     ^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:310:11
+   |
+LL |     match *x {}
+   |           ^^
+help: consider forcing a read of the value
+   |
+LL |     match { *x } {}
+   |           +    +
 
 error[E0004]: non-exhaustive patterns: type `(u32, !)` is non-empty
   --> $DIR/empty-types.rs:313:11
@@ -490,6 +683,22 @@ LL ~         &None => {},
 LL +         &Some(_) => todo!()
    |
 
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:473:5
+   |
+LL |     match *ref_never {}
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:473:11
+   |
+LL |     match *ref_never {}
+   |           ^^^^^^^^^^
+help: consider forcing a read of the value
+   |
+LL |     match { *ref_never } {}
+   |           +            +
+
 error[E0004]: non-exhaustive patterns: `Some(_)` not covered
   --> $DIR/empty-types.rs:488:11
    |
@@ -582,8 +791,28 @@ error: unreachable pattern
 LL |         _x if false => {}
    |         ^^
 
+warning: empty match on potentially-invalid data
+  --> $DIR/empty-types.rs:629:5
+   |
+LL | /     match *ref_never {
+LL | |
+LL | |         // useful, !reachable
+LL | |         _a if false => {}
+LL | |     }
+   | |_____^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty-types.rs:629:11
+   |
+LL |     match *ref_never {
+   |           ^^^^^^^^^^
+help: consider forcing a read of the value
+   |
+LL |     match { *ref_never } {
+   |           +            +
+
 error[E0004]: non-exhaustive patterns: `&_` not covered
-  --> $DIR/empty-types.rs:633:11
+  --> $DIR/empty-types.rs:634:11
    |
 LL |     match ref_never {
    |           ^^^^^^^^^ pattern `&_` not covered
@@ -598,7 +827,7 @@ LL +         &_ => todo!()
    |
 
 error[E0004]: non-exhaustive patterns: `Some(_)` not covered
-  --> $DIR/empty-types.rs:661:11
+  --> $DIR/empty-types.rs:662:11
    |
 LL |     match *x {
    |           ^^ pattern `Some(_)` not covered
@@ -615,7 +844,7 @@ LL ~         None => {},
 LL +         Some(_) => todo!()
    |
 
-error: aborting due to 63 previous errors
+error: aborting due to 63 previous errors; 14 warnings emitted
 
 Some errors have detailed explanations: E0004, E0005.
 For more information about an error, try `rustc --explain E0004`.

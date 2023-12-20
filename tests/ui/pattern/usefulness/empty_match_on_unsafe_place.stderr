@@ -1,0 +1,43 @@
+error: empty match on potentially-invalid data
+  --> $DIR/empty_match_on_unsafe_place.rs:18:9
+   |
+LL |         match *ptr {}
+   |         ^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty_match_on_unsafe_place.rs:18:15
+   |
+LL |         match *ptr {}
+   |               ^^^^
+note: the lint level is defined here
+  --> $DIR/empty_match_on_unsafe_place.rs:3:9
+   |
+LL | #![deny(empty_match_on_unsafe_place)]
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: consider forcing a read of the value
+   |
+LL |         match { *ptr } {}
+   |               +      +
+
+error: empty match on potentially-invalid data
+  --> $DIR/empty_match_on_unsafe_place.rs:22:9
+   |
+LL |         match deref!(ptr) {}
+   |         ^^^^^^^^^^^^^^^^^^^^
+   |
+note: this place can hold invalid data, which would make the match reachable
+  --> $DIR/empty_match_on_unsafe_place.rs:11:9
+   |
+LL |         *$e
+   |         ^^^
+...
+LL |         match deref!(ptr) {}
+   |               ----------- in this macro invocation
+   = note: this error originates in the macro `deref` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider forcing a read of the value
+   |
+LL |         { *$e }
+   |         +     +
+
+error: aborting due to 2 previous errors
+

@@ -39,6 +39,7 @@ declare_lint_pass! {
         DUPLICATE_MACRO_ATTRIBUTES,
         ELIDED_LIFETIMES_IN_ASSOCIATED_CONSTANT,
         ELIDED_LIFETIMES_IN_PATHS,
+        EMPTY_MATCH_ON_UNSAFE_PLACE,
         EXPORTED_PRIVATE_DEPENDENCIES,
         FFI_UNWIND_CALLS,
         FORBIDDEN_LINT_GROUPS,
@@ -4016,6 +4017,76 @@ declare_lint! {
     Allow,
     "detect when patterns of types marked `non_exhaustive` are missed",
     @feature_gate = sym::non_exhaustive_omitted_patterns_lint;
+}
+
+declare_lint! {
+    /// The `empty_match_on_unsafe_place` lint detects uses of `match ... {}` on an empty type where
+    /// the matched place could contain invalid data in a well-defined program. These matches are
+    /// considered exhaustive for backwards-compatibility, but they shouldn't be since a `_` arm
+    /// would be reachable.
+    ///
+    /// This will become an error in the future.
+    ///
+    /// ### Example
+    ///
+    /// ```compile_fail
+    /// #![feature(min_exhaustive_patterns)]
+    /// enum Void {}
+    /// let ptr: *const Void = ...;
+    /// unsafe {
+    ///     match *ptr {}
+    /// }
+    /// ```
+    ///
+    /// This will produce:
+    ///
+    /// ```text
+    /// warning: empty match on potentially-invalid data
+    ///   --> $DIR/empty-types.rs:157:9
+    ///    |
+    /// LL |         match *ptr {}
+    ///    |         ^^^^^^^^^^^^^
+    ///    |
+    /// note: this place can hold invalid data, which would make the match reachable
+    ///   --> $DIR/empty-types.rs:157:15
+    ///    |
+    /// LL |         match *ptr {}
+    ///    |               ^^^^
+    ///    = note: `#[warn(empty_match_on_unsafe_place)]` on by default
+    /// help: consider forcing a read of the value
+    ///    |
+    /// LL |         match { *ptr } {}
+    ///    |               +      +
+    /// ```
+    ///
+    /// ### Explanation
+    ///
+    /// Some place expressions (namely pointer dereferences, union field accesses, and
+    /// (conservatively) reference dereferences) can hold invalid data without causing UB. For
+    /// example, the following is a well-defined program that prints "reachable!".
+    ///
+    /// ```rust
+    /// #[derive(Copy, Clone)]
+    /// enum Void {}
+    /// union Uninit<T: Copy> {
+    ///     value: T,
+    ///     uninit: (),
+    /// }
+    /// unsafe {
+    ///     let x: Uninit<Void> = Uninit { uninit: () };
+    ///     match x.value {
+    ///         _ => println!("reachable!"),
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Therefore when the matched place can hold invalid data, a match with no arm should not be
+    /// considered exhaustive. For backwards-compatibility we consider them exhaustive but warn with
+    /// this lint. It will become an error in the future.
+    pub EMPTY_MATCH_ON_UNSAFE_PLACE,
+    Warn,
+    "warn about empty matches on a place with potentially-invalid data",
+    @feature_gate = sym::min_exhaustive_patterns;
 }
 
 declare_lint! {

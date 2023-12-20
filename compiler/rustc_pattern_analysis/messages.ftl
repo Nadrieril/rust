@@ -1,3 +1,10 @@
+pattern_analysis_empty_match_on_unsafe_place =
+    empty match on potentially-invalid data
+    .note = this place can hold invalid data, which would make the match reachable
+
+pattern_analysis_empty_match_on_unsafe_place_wrap_suggestion =
+    consider forcing a read of the value
+
 pattern_analysis_non_exhaustive_omitted_pattern = some variants are not matched explicitly
     .help = ensure that all variants are matched explicitly by adding the suggested match arms
     .note = the matched value is of type `{$scrut_ty}` and the `non_exhaustive_omitted_patterns` attribute was found
