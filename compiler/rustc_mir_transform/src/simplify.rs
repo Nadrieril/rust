@@ -409,6 +409,16 @@ pub(super) fn remove_dead_blocks(body: &mut Body<'_>) {
 
     for block in basic_blocks {
         block.terminator_mut().successors_mut(|target| *target = replacements[target.index()]);
+
+        // If these blocks haven't been simplified away, update their index.
+        block.switch_merge_block = block
+            .switch_merge_block
+            .filter(|&b| reachable.contains(b))
+            .map(|b| replacements[b.index()]);
+        block.loop_break_block = block
+            .loop_break_block
+            .filter(|&b| reachable.contains(b))
+            .map(|b| replacements[b.index()]);
     }
 }
 

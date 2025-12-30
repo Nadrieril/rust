@@ -378,14 +378,18 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             false,
         );
 
-        self.lower_match_arms(
-            destination,
-            scrutinee_place,
-            scrutinee_span,
-            arms,
-            built_tree,
-            self.source_info(span),
-        )
+        let merge_block = self
+            .lower_match_arms(
+                destination,
+                scrutinee_place,
+                scrutinee_span,
+                arms,
+                built_tree,
+                self.source_info(span),
+            )
+            .into_block();
+        self.cfg.block_data_mut(block).switch_merge_block = Some(merge_block);
+        merge_block.unit()
     }
 
     /// Evaluate the scrutinee and add the PlaceMention for it.

@@ -1327,6 +1327,18 @@ pub struct BasicBlockData<'tcx> {
     /// generated (particularly for MSVC cleanup). Unwind blocks must
     /// only branch to other unwind blocks.
     pub is_cleanup: bool,
+
+    /// If the current block is the start of a loop, this is the block where control-flow resumes
+    /// after the loop `break`. Not used within rustc; this information is kept as a best-effort
+    /// basis for tools that want to know what the user-written control-flow looked like. Note that
+    /// this is indeed syntactic information: it depends on how the user wrote their code, and is
+    /// not losslessly recomputable from the graph of basic blocks.
+    pub loop_break_block: Option<BasicBlock>,
+
+    /// If the current block is a switch, this is the block where control-flow resumes after all the
+    /// branches from this switch merge back together. Like `loop_break_block`, this is best-effort
+    /// syntactic information for tools.
+    pub switch_merge_block: Option<BasicBlock>,
 }
 
 impl<'tcx> BasicBlockData<'tcx> {
@@ -1344,6 +1356,8 @@ impl<'tcx> BasicBlockData<'tcx> {
             after_last_stmt_debuginfos: StmtDebugInfos::default(),
             terminator,
             is_cleanup,
+            loop_break_block: None,
+            switch_merge_block: None,
         }
     }
 
@@ -1713,7 +1727,7 @@ mod size_asserts {
 
     use super::*;
     // tidy-alphabetical-start
-    static_assert_size!(BasicBlockData<'_>, 152);
+    static_assert_size!(BasicBlockData<'_>, 160);
     static_assert_size!(LocalDecl<'_>, 40);
     static_assert_size!(SourceScopeData<'_>, 64);
     static_assert_size!(Statement<'_>, 56);
