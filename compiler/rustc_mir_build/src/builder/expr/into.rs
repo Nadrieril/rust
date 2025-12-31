@@ -124,6 +124,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 let join_block = this.cfg.start_new_block();
                 this.cfg.goto(then_blk, source_info, join_block);
                 this.cfg.goto(else_blk, source_info, join_block);
+                this.cfg.block_data_mut(block).switch_merge_block = Some(join_block);
                 join_block.unit()
             }
             ExprKind::Let { .. } => {
