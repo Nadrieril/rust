@@ -1,0 +1,72 @@
+// MIR for `switch_loop` after built
+
+fn switch_loop() -> () {
+    let mut _0: ();
+    let mut _1: ();
+    let mut _2: bool;
+    let mut _3: !;
+
+    bb0: {
+        goto -> bb1;
+    }
+
+    bb1 (loop -> bb12): {
+        falseUnwind -> [real: bb2, unwind: bb13];
+    }
+
+    bb2 (switch -> bb11): {
+        StorageLive(_2);
+        _2 = const true;
+        PlaceMention(_2);
+        switchInt(copy _2) -> [0: bb6, otherwise: bb4];
+    }
+
+    bb3: {
+        FakeRead(ForMatchedPlace(None), _2);
+        unreachable;
+    }
+
+    bb4: {
+        falseEdge -> [real: bb8, imaginary: bb6];
+    }
+
+    bb5: {
+        goto -> bb3;
+    }
+
+    bb6: {
+        _1 = const ();
+        goto -> bb11;
+    }
+
+    bb7: {
+        goto -> bb3;
+    }
+
+    bb8: {
+        _0 = const ();
+        goto -> bb12;
+    }
+
+    bb9: {
+        unreachable;
+    }
+
+    bb10: {
+        goto -> bb11;
+    }
+
+    bb11: {
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb12: {
+        StorageDead(_2);
+        return;
+    }
+
+    bb13 (cleanup): {
+        resume;
+    }
+}

@@ -721,7 +721,14 @@ impl<'de, 'tcx> MirWriter<'de, 'tcx> {
 
         // Basic block label at the top.
         let cleanup_text = if data.is_cleanup { " (cleanup)" } else { "" };
-        writeln!(w, "{INDENT}{block:?}{cleanup_text}: {{")?;
+        write!(w, "{INDENT}{block:?}{cleanup_text}")?;
+        if let Some(b) = data.loop_break_block {
+            write!(w, " (loop -> {b:?})")?;
+        }
+        if let Some(b) = data.switch_merge_block {
+            write!(w, " (switch -> {b:?})")?;
+        }
+        writeln!(w, ": {{")?;
 
         // List of statements in the middle.
         let mut current_location = Location { block, statement_index: 0 };
