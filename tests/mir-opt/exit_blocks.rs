@@ -1,4 +1,5 @@
 // skip-filecheck
+//@ compile-flags: -Zmir-track-cfg-structure
 
 // EMIT_MIR exit_blocks.unconditional_switch.built.after.mir
 // EMIT_MIR exit_blocks.unconditional_switch.SimplifyCfg-initial.after.mir

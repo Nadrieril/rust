@@ -1329,18 +1329,21 @@ pub struct BasicBlockData<'tcx> {
     pub is_cleanup: bool,
 
     /// If the current block is the start of a loop, this is the block where control-flow resumes
-    /// after the loop `break`. Not used within rustc; this information is kept as a best-effort
-    /// basis for tools that want to know what the user-written control-flow looked like. Note that
-    /// this is indeed syntactic information: it depends on how the user wrote their code, and is
-    /// not losslessly recomputable from the graph of basic blocks.
+    /// after the loop `break`. Only `Some` if `-Zmir-track-cfg-structure` is set.
+    ///
+    /// Not used within rustc; this information is kept as a best-effort basis for tools that want
+    /// to know what the user-written control-flow looked like. Note that this is indeed syntactic
+    /// information: it depends on how the user wrote their code, and is not losslessly recomputable
+    /// from the graph of basic blocks.
     pub loop_break_block: Option<BasicBlock>,
 
     /// If the current block is a switch, this is the block where control-flow resumes after all the
     /// branches from this switch merge back together. Like `loop_break_block`, this is best-effort
-    /// syntactic information for tools.
+    /// syntactic information for tools. Only `Some` if `-Zmir-track-cfg-structure` is set.
     pub switch_merge_block: Option<BasicBlock>,
 
-    /// Whether this block is the target of a `loop_break_block` or `switch_merge_block`.
+    /// Whether this block is the target of a `loop_break_block` or `switch_merge_block`. Only
+    /// `true` if `-Zmir-track-cfg-structure` is set.
     pub is_exit_block: bool,
 }
 
@@ -1385,7 +1388,7 @@ impl<'tcx> BasicBlockData<'tcx> {
         self.statements.is_empty() && matches!(self.terminator().kind, TerminatorKind::Unreachable)
     }
 
-    /// Whether the block is relevant to the cfg structure when `-Zpreserve-cfg-structure` is set
+    /// Whether the block is relevant to the cfg structure when `-Zmir-track-cfg-structure` is set
     pub fn is_relevant_to_cfg_structure(&self) -> bool {
         self.loop_break_block.is_some() || self.switch_merge_block.is_some() || self.is_exit_block
     }

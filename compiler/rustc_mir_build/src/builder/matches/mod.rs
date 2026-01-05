@@ -388,8 +388,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 self.source_info(span),
             )
             .into_block();
-        self.cfg.block_data_mut(block).switch_merge_block = Some(merge_block);
-        self.cfg.block_data_mut(merge_block).is_exit_block = true;
+        if self.tcx.sess.opts.unstable_opts.mir_track_cfg_structure {
+            self.cfg.block_data_mut(block).switch_merge_block = Some(merge_block);
+            self.cfg.block_data_mut(merge_block).is_exit_block = true;
+        }
         merge_block.unit()
     }
 

@@ -2486,6 +2486,9 @@ options! {
         e.g., by miri; implies -Zmir-opt-level=0 (default: no)"),
     mir_strip_debuginfo: MirStripDebugInfo = (MirStripDebugInfo::None, parse_mir_strip_debuginfo, [TRACKED],
         "Whether to remove some of the MIR debug info from methods.  Default: None"),
+    mir_track_cfg_structure: bool = (false, parse_bool, [TRACKED],
+        "record information in basic blocks about the original (syntactic) shape of the control-flow.
+        For use in tools (default: no)"),
     move_size_limit: Option<usize> = (None, parse_opt_number, [TRACKED],
         "the size at which the `large_assignments` lint starts to be emitted"),
     mutable_noalias: bool = (true, parse_bool, [TRACKED],
