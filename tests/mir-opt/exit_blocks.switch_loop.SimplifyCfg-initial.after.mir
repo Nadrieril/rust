@@ -10,11 +10,11 @@ fn switch_loop() -> () {
         goto -> bb1;
     }
 
-    bb1: {
-        falseUnwind -> [real: bb2, unwind: bb6];
+    bb1 (loop -> bb7): {
+        falseUnwind -> [real: bb2, unwind: bb8];
     }
 
-    bb2: {
+    bb2 (switch -> bb6): {
         StorageLive(_2);
         _2 = const true;
         PlaceMention(_2);
@@ -27,17 +27,25 @@ fn switch_loop() -> () {
 
     bb4: {
         _1 = const ();
-        StorageDead(_2);
-        goto -> bb1;
+        goto -> bb6;
     }
 
     bb5: {
         _0 = const ();
+        goto -> bb7;
+    }
+
+    bb6: {
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb7: {
         StorageDead(_2);
         return;
     }
 
-    bb6 (cleanup): {
+    bb8 (cleanup): {
         resume;
     }
 }

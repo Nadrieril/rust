@@ -1339,6 +1339,9 @@ pub struct BasicBlockData<'tcx> {
     /// branches from this switch merge back together. Like `loop_break_block`, this is best-effort
     /// syntactic information for tools.
     pub switch_merge_block: Option<BasicBlock>,
+
+    /// Whether this block is the target of a `loop_break_block` or `switch_merge_block`.
+    pub is_exit_block: bool,
 }
 
 impl<'tcx> BasicBlockData<'tcx> {
@@ -1358,6 +1361,7 @@ impl<'tcx> BasicBlockData<'tcx> {
             is_cleanup,
             loop_break_block: None,
             switch_merge_block: None,
+            is_exit_block: false,
         }
     }
 
@@ -1379,6 +1383,11 @@ impl<'tcx> BasicBlockData<'tcx> {
     #[inline]
     pub fn is_empty_unreachable(&self) -> bool {
         self.statements.is_empty() && matches!(self.terminator().kind, TerminatorKind::Unreachable)
+    }
+
+    /// Whether the block is relevant to the cfg structure when `-Zpreserve-cfg-structure` is set
+    pub fn is_relevant_to_cfg_structure(&self) -> bool {
+        self.loop_break_block.is_some() || self.switch_merge_block.is_some() || self.is_exit_block
     }
 
     /// Like [`Terminator::successors`] but tries to use information available from the [`Instance`]

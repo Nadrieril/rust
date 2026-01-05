@@ -389,6 +389,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             )
             .into_block();
         self.cfg.block_data_mut(block).switch_merge_block = Some(merge_block);
+        self.cfg.block_data_mut(merge_block).is_exit_block = true;
         merge_block.unit()
     }
 

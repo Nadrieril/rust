@@ -209,8 +209,10 @@ impl<'a, 'tcx> CfgSimplifier<'a, 'tcx> {
     /// * the block has statements
     /// * the block has a terminator other than `goto`
     /// * the block has no terminator (meaning some other part of the current optimization stole it)
+    /// * the block is relevant to the cfg structure and `-Zpreserve-cfg-structure` is set
     fn take_terminator_if_simple_goto(&mut self, bb: BasicBlock) -> Option<Terminator<'tcx>> {
         match self.basic_blocks[bb] {
+            ref bb if bb.is_relevant_to_cfg_structure() => None,
             BasicBlockData {
                 ref statements,
                 terminator:
@@ -286,8 +288,12 @@ impl<'a, 'tcx> CfgSimplifier<'a, 'tcx> {
             _ => return false,
         };
 
+        let tgt_data = &mut self.basic_blocks[target];
+        if tgt_data.is_relevant_to_cfg_structure() {
+            return false;
+        };
         debug!("merging block {:?} into {:?}", target, terminator);
-        *terminator = match self.basic_blocks[target].terminator.take() {
+        *terminator = match tgt_data.terminator.take() {
             Some(terminator) => terminator,
             None => {
                 // unreachable loop - this should not be possible, as we

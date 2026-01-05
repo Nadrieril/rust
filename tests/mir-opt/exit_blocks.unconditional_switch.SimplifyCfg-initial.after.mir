@@ -8,7 +8,7 @@ fn unconditional_switch() -> () {
         debug x => _2;
     }
 
-    bb0: {
+    bb0 (switch -> bb1): {
         StorageLive(_1);
         _1 = const 0_i32;
         PlaceMention(_1);
@@ -16,6 +16,10 @@ fn unconditional_switch() -> () {
         _2 = copy _1;
         _0 = const ();
         StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb1: {
         StorageDead(_1);
         return;
     }

@@ -13,9 +13,7 @@ fn unconditional_switch() {
 fn switch_loop() {
     loop {
         match true {
-            true => {
-                break;
-            }
+            true => break,
             false => {}
         }
     }

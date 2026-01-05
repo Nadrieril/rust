@@ -125,6 +125,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 this.cfg.goto(then_blk, source_info, join_block);
                 this.cfg.goto(else_blk, source_info, join_block);
                 this.cfg.block_data_mut(block).switch_merge_block = Some(join_block);
+                this.cfg.block_data_mut(join_block).is_exit_block = true;
                 join_block.unit()
             }
             ExprKind::Let { .. } => {
@@ -247,6 +248,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     })
                     .into_block();
                 this.cfg.block_data_mut(loop_block).loop_break_block = Some(end_block);
+                this.cfg.block_data_mut(end_block).is_exit_block = true;
                 end_block.unit()
             }
             ExprKind::LoopMatch {

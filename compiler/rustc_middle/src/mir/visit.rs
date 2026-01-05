@@ -314,6 +314,7 @@ macro_rules! make_mir_visitor {
                     is_cleanup: _,
                     loop_break_block: _,
                     switch_merge_block: _,
+                    is_exit_block: _,
                 } = data;
 
                 let mut index = 0;
