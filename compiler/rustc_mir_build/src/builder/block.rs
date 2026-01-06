@@ -211,6 +211,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                                     DeclareLetBindings::No,
                                 )
                             });
+                        if this.tcx.sess.opts.unstable_opts.mir_track_cfg_structure {
+                            this.cfg.block_data_mut(block).switch_merge_block = Some(matching);
+                            this.cfg.block_data_mut(matching).is_exit_block = true;
+                        }
                         matching.and(failure)
                     });
                     let failure = unpack!(block = failure_and_block);
